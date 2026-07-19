@@ -5,12 +5,12 @@ description: Coordinate an explicit, formal multi-role software delivery workflo
 
 # Coordinate the SDLC workflow
 
-Keep the main thread focused on business decisions, state transitions, and synthesized results. Delegate bounded work to the project agents and explicitly name the phase skill in every delegation prompt.
+Keep the main thread focused on business decisions, state transitions, and synthesized results. Delegate bounded work to independent role subagents and explicitly name the bundled phase Skill in every delegation prompt. The plugin must work without project-local Skills, custom agents, `.codex/config.toml`, or `AGENTS.md` changes.
 
 ## Start or resume
 
 1. Locate the repository root.
-2. Run `python3 .agents/skills/sdlc-orchestrator/scripts/workflow.py status`.
+2. Resolve this Skill's own directory from the loaded `SKILL.md` path and run `python3 <skill-dir>/scripts/workflow.py --root <repository-root> status`. Never assume the Skill lives inside the target repository.
 3. If no workflow exists and the user explicitly requested the formal process, initialize it with `init --title ... --mode standard --request ...`.
 4. Run `next` before assigning work.
 5. Do not initialize a formal workflow from an ordinary coding request.
@@ -30,7 +30,7 @@ Use [meeting-notes-template.md](assets/meeting-notes-template.md) for every cros
 | `verification` | Spawn a `tester` task with `$sdlc-testing`; send confirmed defects to a `developer` task. |
 | `acceptance` | Spawn all three role tasks with `$sdlc-review`; product checks intent, tester checks evidence, developer answers technical findings. |
 
-Use the matching project custom agent when the current Codex surface exposes custom-agent selection. Otherwise use a role-named subagent task and include the role boundary plus the explicit `$sdlc-*` Skill in its prompt; never omit the Skill and rely on the task name alone.
+Use a role-named subagent task and include the role boundary plus the explicit bundled `$sdlc-*` Skill in its prompt. Project custom agents may be used when available, but the workflow must never depend on them. Never omit the Skill and rely on the task name alone.
 
 ## Enforce gates
 
@@ -48,7 +48,7 @@ Use the matching project custom agent when the current Codex surface exposes cus
 
 ## Commands
 
-Use `python3 .agents/skills/sdlc-orchestrator/scripts/workflow.py --help` for the complete interface. Common commands:
+Resolve `workflow.py` relative to this Skill and use `python3 <skill-dir>/scripts/workflow.py --root <repository-root> --help` for the complete interface. Common subcommands:
 
 ```text
 workflow.py init --title "..." --mode standard --request "..."

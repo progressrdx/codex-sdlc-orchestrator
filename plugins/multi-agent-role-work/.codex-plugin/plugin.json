@@ -1,0 +1,26 @@
+{
+  "name": "multi-agent-role-work",
+  "version": "1.0.0",
+  "description": "A turnkey multi-role SDLC workflow for Codex with product, engineering, testing, review gates, and meeting records.",
+  "author": {
+    "name": "progressrdx",
+    "url": "https://github.com/progressrdx"
+  },
+  "homepage": "https://github.com/progressrdx/multi-agent-role-work#readme",
+  "repository": "https://github.com/progressrdx/multi-agent-role-work",
+  "keywords": ["sdlc", "multi-agent", "product", "engineering", "testing"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Multi-Role SDLC",
+    "shortDescription": "Product, engineering, and testing workflow with review gates.",
+    "longDescription": "Run a formal software delivery workflow in any project without copying project files. An orchestrator activates product, engineering, testing, independent reviews, persistent state, and structured meeting records only when explicitly requested.",
+    "developerName": "progressrdx",
+    "category": "Productivity",
+    "capabilities": ["Multi-agent coordination", "Persistent workflow", "Review gates"],
+    "defaultPrompt": [
+      "启动标准研发流程：描述你的需求。",
+      "继续当前正式研发流程。",
+      "查看当前研发流程状态和阻塞项。"
+    ]
+  }
+}

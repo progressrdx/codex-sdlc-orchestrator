@@ -1,19 +1,26 @@
-# Codex Multi-Role SDLC
+# Multi-Role SDLC for Codex
 
-A project-local Codex workflow that coordinates a product manager, developer, and tester through persistent, evidence-based delivery stages.
+An install-once Codex plugin that coordinates product, engineering, and testing roles through a formal software delivery workflow. It keeps persistent state, enforces independent review gates, and records concise cross-role meeting notes.
 
-## Design
+## Install once
 
-- The coordinator is the only implicitly discoverable workflow Skill.
-- Role and review Skills disable implicit invocation and load only when the coordinator names them.
-- `.ai-workflow/` stores deterministic state; `docs/requirements/<id>/` stores durable artifacts.
-- Project agents under `.codex/agents/` keep product, engineering, and testing responsibilities separate.
-- Review gates require explicit role verdicts and reject unresolved blockers.
-- Every cross-role review, disagreement, defect triage, or change discussion produces concise meeting notes under `docs/requirements/<id>/meetings/`.
+Run this command on any machine with Codex installed:
 
-## Start
+```bash
+codex plugin marketplace add progressrdx/multi-agent-role-work && codex plugin add multi-agent-role-work@personal
+```
 
-In Codex, ask:
+Start a new Codex task after installation. The plugin is then available in every project; no files need to be copied into those projects and no `AGENTS.md` or `.codex/config.toml` needs to be edited.
+
+## Start in any project
+
+Open the project in Codex and say:
+
+```text
+启动标准研发流程：实现会员积分过期功能。
+```
+
+The natural-language phrase is enough. `$sdlc-orchestrator` remains available when an explicit Skill invocation is preferred:
 
 ```text
 使用 $sdlc-orchestrator 启动标准研发流程：实现会员积分过期功能。
@@ -24,17 +31,28 @@ To inspect or continue:
 ```text
 继续当前正式研发流程。
 当前流程进行到哪一步？
+查看当前阻塞问题和待办事项。
 ```
 
-Ordinary coding requests do not start the workflow.
+Ordinary coding, explanation, and isolated-fix requests do not activate the formal workflow.
 
-## State tool
+## What it creates
+
+The plugin stores only workflow outputs in the target project:
 
 ```text
-python3 .agents/skills/sdlc-orchestrator/scripts/workflow.py --help
-python3 .agents/skills/sdlc-orchestrator/scripts/workflow.py status
-python3 .agents/skills/sdlc-orchestrator/scripts/workflow.py next
+.ai-workflow/
+└── active.yaml
+
+docs/requirements/<requirement-id>/
+├── requirements and design artifacts
+├── reviews/
+└── meetings/
 ```
+
+Meeting records preserve material product, engineering, and testing viewpoints, disagreements, decisions, rationale, owners, open questions, and next steps—not raw transcripts.
+
+## Workflow
 
 The default `standard` flow is:
 
@@ -43,10 +61,27 @@ intake → prd → prd_review → design → readiness_review
        → implementation → verification → acceptance → completed
 ```
 
-`quick` skips the full PRD stage. `strict` additionally requires explicit database-design and release-plan artifacts, which may be marked not applicable with justification.
+- `quick` skips the full PRD stage.
+- `strict` additionally requires explicit database-design and release-plan artifacts; they may be marked not applicable with justification.
 
-At PRD review, readiness review, and acceptance, independent role reviews are followed by a structured meeting summary. The state machine will not advance a gate without current meeting notes covering all required roles. Meeting notes retain key viewpoints, disagreements, decisions, rationale, owners, open questions, and next steps—not a raw chat transcript.
+PRD review, readiness review, and acceptance require independent role verdicts plus current meeting notes covering all required roles. Unresolved blockers prevent the workflow from advancing.
 
-## Trust boundary
+## Update or uninstall
 
-The state tool is a workflow integrity guard, not an identity or security system. It requires repository evidence, distinct review records, matching issue owners, and substantive document size, but a human with filesystem access can still forge those inputs. Real reviewer independence comes from the coordinator assigning separate Codex agents and preserving their outputs. Content quality remains a review responsibility; deterministic checks only prevent obvious omissions and stage skipping.
+```bash
+codex plugin marketplace upgrade personal
+codex plugin add multi-agent-role-work@personal
+```
+
+```bash
+codex plugin remove multi-agent-role-work
+```
+
+## Development verification
+
+```bash
+python3 -m unittest discover -s tests -v
+python3 /path/to/plugin-creator/scripts/validate_plugin.py plugins/multi-agent-role-work
+```
+
+The workflow state tool is a delivery-integrity guard, not an identity or security system. Independent role agents and evidence-based reviews provide the practical separation of responsibilities.

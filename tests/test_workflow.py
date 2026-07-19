@@ -9,7 +9,8 @@ from pathlib import Path
 
 SCRIPT = (
     Path(__file__).resolve().parents[1]
-    / ".agents"
+    / "plugins"
+    / "multi-agent-role-work"
     / "skills"
     / "sdlc-orchestrator"
     / "scripts"
