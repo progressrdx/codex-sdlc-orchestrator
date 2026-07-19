@@ -1,0 +1,6 @@
+interface:
+  display_name: "SDLC Testing"
+  short_description: "Design tests and independently verify delivery"
+  default_prompt: "Use $sdlc-testing for the assigned test planning or verification phase."
+policy:
+  allow_implicit_invocation: false

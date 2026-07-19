@@ -1,0 +1,6 @@
+interface:
+  display_name: "SDLC Review Gate"
+  short_description: "Run evidence-based cross-role review gates"
+  default_prompt: "Use $sdlc-review to review the active gate from the assigned role perspective."
+policy:
+  allow_implicit_invocation: false

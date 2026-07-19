@@ -1,0 +1,6 @@
+interface:
+  display_name: "SDLC Product Manager"
+  short_description: "Create and revise testable product requirements"
+  default_prompt: "Use $sdlc-product to produce or revise the PRD for the active workflow."
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,4 @@
+interface:
+  display_name: "SDLC Coordinator"
+  short_description: "Route formal development through gated stages"
+  default_prompt: "Use $sdlc-orchestrator to start or continue a formal multi-role development workflow."
