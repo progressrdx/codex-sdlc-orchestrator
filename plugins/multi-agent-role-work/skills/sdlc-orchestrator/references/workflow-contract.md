@@ -18,6 +18,19 @@ All durable artifacts belong under `docs/requirements/<workflow-id>/`. The state
 
 At each configured gate, every required role must submit an explicit verdict. A rejection is not averaged away. Resolve blockers, revise the artifact, reset stale approvals, and review again.
 
+## Human authorization
+
+Human authorization is distinct from AI review. Configure it at initialization for any gate that controls destructive data changes, permissions, production release, security exceptions, legal/compliance decisions, or another irreversible or high-impact action.
+
+At a configured checkpoint:
+
+1. Complete independent role verdicts and current approved meeting notes.
+2. Present the current evidence to the user or named authority.
+3. Pause until that person explicitly approves or rejects.
+4. Record approval only from that explicit response, with a separate repository evidence file.
+
+Never delegate human approval to another Agent or infer it from silence. The state script binds the approval to current decision and meeting hashes, but it cannot authenticate the approver.
+
 ## Communication records
 
 Create structured meeting notes whenever two or more roles exchange findings, negotiate a disagreement, change scope, triage a defect, or make a gate decision. Preserve the purpose, each material role position, key reasoning, disagreements, decisions with rationale, action owners, open questions, and next step. Omit greetings, repetition, chain-of-thought, and raw transcripts.
@@ -39,3 +52,7 @@ When an approved requirement changes:
 Statements such as “implemented”, “tested”, or “approved” require a path, command result, review record, or other inspectable evidence. Never use confidence language as evidence.
 
 The state script is not an authentication boundary. Enforce reviewer independence operationally by delegating to separate agents, using unique review files, and preserving their unedited findings. Deterministic checks reject missing or trivial evidence but cannot prove that a document is correct.
+
+## State integrity
+
+State files use a versioned schema, monotonic revision, atomic replacement, and a repository-scoped cross-process writer lock. A stale writer is rejected when the on-disk revision differs from the revision it loaded. These controls protect local consistency; they do not resolve Git merge conflicts or provide tamper-proof audit history.

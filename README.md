@@ -36,6 +36,14 @@ To inspect or continue:
 
 Ordinary coding, explanation, and isolated-fix requests do not activate the formal workflow.
 
+For a high-risk requirement, ask for human checkpoints explicitly:
+
+```text
+启动严格研发流程，并要求在就绪评审和最终验收时由我人工批准：执行用户数据迁移。
+```
+
+The coordinator pauses at each configured checkpoint. AI role approvals never substitute for the named human authority.
+
 ## What it creates
 
 The plugin stores only workflow outputs in the target project:
@@ -65,6 +73,16 @@ intake → prd → prd_review → design → readiness_review
 - `strict` additionally requires explicit database-design and release-plan artifacts; they may be marked not applicable with justification.
 
 PRD review, readiness review, and acceptance require independent role verdicts plus current meeting notes covering all required roles. Unresolved blockers prevent the workflow from advancing.
+
+Workflow state uses:
+
+- Schema validation and migration from schema v1.
+- A monotonic revision checked before every update.
+- Atomic file replacement with flushed data.
+- A repository-scoped cross-process writer lock.
+- Evidence hashes that make stale meetings and human approvals unusable.
+
+These are local consistency controls, not identity authentication or tamper-proof audit guarantees. See [SECURITY.md](SECURITY.md) and [THREAT_MODEL.md](THREAT_MODEL.md).
 
 ## Update or uninstall
 

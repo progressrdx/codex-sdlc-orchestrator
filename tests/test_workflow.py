@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows uses the runtime's msvcrt branch.
+    fcntl = None
 
 
 SCRIPT = (
@@ -27,9 +35,20 @@ class WorkflowToolTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def run_tool(self, *args: str, expected: int = 0) -> subprocess.CompletedProcess[str]:
+    def run_tool(
+        self,
+        *args: str,
+        expected: int = 0,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         command = [sys.executable, str(SCRIPT), "--root", str(self.root), *args]
-        result = subprocess.run(command, text=True, capture_output=True, check=False)
+        result = subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            check=False,
+            env=env,
+        )
         self.assertEqual(
             expected,
             result.returncode,
@@ -37,7 +56,11 @@ class WorkflowToolTests(unittest.TestCase):
         )
         return result
 
-    def init(self, mode: str = "standard") -> None:
+    def init(
+        self,
+        mode: str = "standard",
+        human_gates: tuple[str, ...] = (),
+    ) -> None:
         self.run_tool(
             "init",
             "--id",
@@ -48,6 +71,11 @@ class WorkflowToolTests(unittest.TestCase):
             mode,
             "--request",
             "Build a deterministic example.",
+            *(
+                item
+                for gate in human_gates
+                for item in ("--require-human-approval", gate)
+            ),
         )
 
     def write_artifact(
@@ -480,6 +508,104 @@ class WorkflowToolTests(unittest.TestCase):
         completed = self.run_tool("advance")
         self.assertIn("acceptance -> completed", completed.stdout)
         self.assertFalse((self.root / ".ai-workflow" / "active.yaml").exists())
+
+    def test_state_revision_increments_and_schema_is_validated(self) -> None:
+        self.init("quick")
+        initial = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual(2, initial["schema_version"])
+        self.assertEqual(1, initial["revision"])
+
+        self.run_tool("advance")
+        advanced = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual(2, advanced["revision"])
+        self.assertFalse(
+            list((self.root / ".ai-workflow").rglob("*.tmp")),
+            "Atomic writes must not leave temporary files behind.",
+        )
+
+        state_path = self.root / ".ai-workflow" / "REQ-test-flow" / "state.yaml"
+        advanced["schema_version"] = 999
+        state_path.write_text(json.dumps(advanced), encoding="utf-8")
+        rejected = self.run_tool("status", expected=2)
+        self.assertIn("Unsupported schema_version", rejected.stderr)
+
+    def test_workflow_ids_and_active_pointer_cannot_escape_repository(self) -> None:
+        self.init("quick")
+        invalid_id = self.run_tool(
+            "--id",
+            "../../outside",
+            "status",
+            expected=2,
+        )
+        self.assertIn("Workflow ID must be", invalid_id.stderr)
+
+        pointer = self.root / ".ai-workflow" / "active.yaml"
+        pointer.write_text(
+            json.dumps(
+                {
+                    "workflow_id": "REQ-test-flow",
+                    "state_path": "../../outside.yaml",
+                }
+            ),
+            encoding="utf-8",
+        )
+        escaped = self.run_tool("status", expected=2)
+        self.assertIn("must be inside the repository root", escaped.stderr)
+
+    def test_configured_human_approval_blocks_gate_and_binds_evidence(self) -> None:
+        self.init(human_gates=("prd_review",))
+        self.run_tool("advance")
+        self.record("prd", "requirements/REQ-test-flow/01-prd.md")
+        self.run_tool("advance")
+        roles = ("product", "engineering", "testing")
+        self.approve("prd_review", roles)
+
+        blocked = self.run_tool("advance", expected=2)
+        self.assertIn("human_approval:prd_review", blocked.stderr)
+
+        evidence = self.write_artifact(
+            "requirements/REQ-test-flow/approvals/prd-review-human.md",
+            "# Human approval: prd_review\n\nAlice reviewed the current role verdicts and meeting record.\n\n"
+            "## Authorization\n\nAlice explicitly records approve for this PRD review.\n\n"
+            "## Scope\n\nThe approval applies only to the current evidence snapshot.\n",
+        )
+        self.run_tool(
+            "record-human-approval",
+            "--gate",
+            "prd_review",
+            "--approved-by",
+            "Alice",
+            "--evidence",
+            str(evidence.relative_to(self.root)),
+        )
+        self.run_tool("advance")
+        self.assertIn("Stage: design", self.run_tool("status").stdout)
+
+    @unittest.skipIf(fcntl is None, "POSIX lock test")
+    def test_concurrent_writer_is_rejected(self) -> None:
+        lock_key = hashlib.sha256(str(self.root.resolve()).encode("utf-8")).hexdigest()
+        lock_path = (
+            Path(tempfile.gettempdir())
+            / "multi-agent-role-work-locks"
+            / f"{lock_key}.lock"
+        )
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            env = dict(os.environ)
+            env["SDLC_LOCK_TIMEOUT"] = "0.1"
+            rejected = self.run_tool(
+                "init",
+                "--id",
+                "REQ-locked",
+                "--title",
+                "Locked workflow",
+                "--request",
+                "This update should be rejected while another writer holds the lock.",
+                expected=2,
+                env=env,
+            )
+            self.assertIn("Another workflow update is in progress", rejected.stderr)
 
 
 if __name__ == "__main__":

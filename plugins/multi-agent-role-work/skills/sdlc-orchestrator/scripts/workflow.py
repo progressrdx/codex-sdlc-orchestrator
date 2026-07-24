@@ -6,12 +6,26 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
+import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+try:
+    import fcntl  # type: ignore
+except ImportError:  # pragma: no cover - Windows fallback is exercised on Windows.
+    fcntl = None
+
+try:
+    import msvcrt  # type: ignore
+except ImportError:  # pragma: no cover - POSIX uses fcntl.
+    msvcrt = None
 
 try:
     import yaml  # type: ignore
@@ -19,6 +33,8 @@ except ImportError:  # JSON is valid YAML 1.2 and is the dependency-free fallbac
     yaml = None
 
 
+CURRENT_SCHEMA_VERSION = 2
+WORKFLOW_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{2,80}")
 ROLES = ("product", "engineering", "testing")
 GATES = ("prd_review", "readiness_review", "acceptance")
 MEETING_TYPES = GATES + ("design_sync", "defect_triage", "change_control", "ad_hoc")
@@ -156,21 +172,94 @@ def load_data(path: Path) -> dict[str, Any]:
     return data
 
 
-def save_data(path: Path, data: dict[str, Any]) -> None:
+def atomic_write_text(path: Path, rendered: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+        text=True,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(rendered)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        try:
+            directory = os.open(path.parent, os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def save_data(path: Path, data: dict[str, Any]) -> None:
     if yaml:
         rendered = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
     else:
         rendered = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
-    path.write_text(rendered, encoding="utf-8")
+    atomic_write_text(path, rendered)
+
+
+@contextmanager
+def workflow_lock(root: Path) -> Any:
+    lock_key = hashlib.sha256(str(root).encode("utf-8")).hexdigest()
+    lock_path = Path(tempfile.gettempdir()) / "multi-agent-role-work-locks" / f"{lock_key}.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    timeout = float(os.environ.get("SDLC_LOCK_TIMEOUT", "5"))
+    deadline = time.monotonic() + max(timeout, 0)
+    acquired = False
+    try:
+        while not acquired:
+            try:
+                if fcntl is not None:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                elif msvcrt is not None:  # pragma: no cover - Windows only.
+                    if os.fstat(descriptor).st_size == 0:
+                        os.write(descriptor, b"\0")
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                else:  # pragma: no cover - supported Python platforms provide one.
+                    raise WorkflowError("No supported file-lock implementation is available.")
+                acquired = True
+            except (BlockingIOError, OSError):
+                if time.monotonic() >= deadline:
+                    raise WorkflowError(
+                        "Another workflow update is in progress. Retry after it completes."
+                    )
+                time.sleep(0.05)
+        yield
+    finally:
+        if acquired:
+            if fcntl is not None:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            elif msvcrt is not None:  # pragma: no cover - Windows only.
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        os.close(descriptor)
 
 
 def active_pointer(root: Path) -> Path:
     return root / ".ai-workflow" / "active.yaml"
 
 
+def validate_workflow_id(workflow_id: str) -> None:
+    if not WORKFLOW_ID_PATTERN.fullmatch(workflow_id):
+        raise WorkflowError(
+            "Workflow ID must be 3-81 characters using letters, digits, dot, underscore, or hyphen."
+        )
+
+
 def state_path(root: Path, workflow_id: str | None = None) -> Path:
     if workflow_id:
+        validate_workflow_id(workflow_id)
         return root / ".ai-workflow" / workflow_id / "state.yaml"
     pointer = active_pointer(root)
     if not pointer.exists():
@@ -179,12 +268,60 @@ def state_path(root: Path, workflow_id: str | None = None) -> Path:
     relative = data.get("state_path")
     if not isinstance(relative, str) or not relative:
         raise WorkflowError(f"Invalid active pointer: {pointer}")
-    return root / relative
+    resolved = (root / relative).resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise WorkflowError("Active workflow state must be inside the repository root.") from exc
+    return resolved
 
 
 def load_state(root: Path, workflow_id: str | None = None) -> tuple[Path, dict[str, Any]]:
     path = state_path(root, workflow_id)
-    return path, load_data(path)
+    state = load_data(path)
+    migrate_state(state)
+    validate_state(state, path)
+    return path, state
+
+
+def migrate_state(state: dict[str, Any]) -> None:
+    version = state.get("schema_version")
+    if version == 1:
+        state["schema_version"] = CURRENT_SCHEMA_VERSION
+        state.setdefault("revision", 0)
+        state.setdefault("human_approval_policy", {"required_gates": []})
+        state.setdefault("human_approvals", {})
+
+
+def validate_state(state: dict[str, Any], path: Path) -> None:
+    if state.get("schema_version") != CURRENT_SCHEMA_VERSION:
+        raise WorkflowError(
+            f"Unsupported schema_version in {path}: {state.get('schema_version')}; "
+            f"expected {CURRENT_SCHEMA_VERSION}."
+        )
+    revision = state.get("revision")
+    if not isinstance(revision, int) or revision < 0:
+        raise WorkflowError(f"Invalid revision in {path}: {revision!r}")
+    workflow = state.get("workflow")
+    if not isinstance(workflow, dict):
+        raise WorkflowError(f"Missing workflow mapping in {path}")
+    mode = workflow.get("mode")
+    stage = workflow.get("current_stage")
+    if mode not in FLOWS:
+        raise WorkflowError(f"Invalid workflow mode in {path}: {mode!r}")
+    if stage not in FLOWS[mode]:
+        raise WorkflowError(f"Invalid workflow stage in {path}: {stage!r}")
+    if workflow.get("status") not in {"active", "completed"}:
+        raise WorkflowError(f"Invalid workflow status in {path}: {workflow.get('status')!r}")
+    required_gates = state.get("human_approval_policy", {}).get("required_gates", [])
+    if not isinstance(required_gates, list) or any(gate not in GATES for gate in required_gates):
+        raise WorkflowError(f"Invalid human approval policy in {path}")
+    for name in ("artifacts", "decisions", "human_approvals"):
+        if not isinstance(state.get(name), dict):
+            raise WorkflowError(f"Invalid {name} mapping in {path}")
+    for name in ("issues", "meetings", "history"):
+        if not isinstance(state.get(name), list):
+            raise WorkflowError(f"Invalid {name} list in {path}")
 
 
 def workflow_id_from_title(title: str) -> str:
@@ -241,6 +378,10 @@ def gate_decision_snapshot(state: dict[str, Any], gate: str) -> dict[str, str]:
 
 
 def gate_meeting_ready(state: dict[str, Any], gate: str) -> bool:
+    return current_gate_meeting(state, gate) is not None
+
+
+def current_gate_meeting(state: dict[str, Any], gate: str) -> dict[str, Any] | None:
     required_roles = set(required_gate_roles(state, gate))
     snapshot = gate_decision_snapshot(state, gate)
     for meeting in reversed(state.get("meetings", [])):
@@ -252,8 +393,25 @@ def gate_meeting_ready(state: dict[str, Any], gate: str) -> bool:
             and required_roles.issubset(set(meeting.get("participants", [])))
             and meeting.get("decision_snapshot") == snapshot
         ):
-            return True
-    return False
+            return meeting
+    return None
+
+
+def human_approval_required(state: dict[str, Any], gate: str) -> bool:
+    return gate in state.get("human_approval_policy", {}).get("required_gates", [])
+
+
+def human_approval_ready(state: dict[str, Any], gate: str) -> bool:
+    if not human_approval_required(state, gate):
+        return True
+    meeting = current_gate_meeting(state, gate)
+    approval = state.get("human_approvals", {}).get(gate, {})
+    return bool(
+        meeting
+        and approval.get("status") == "current"
+        and approval.get("decision_snapshot") == gate_decision_snapshot(state, gate)
+        and approval.get("meeting_evidence_sha256") == meeting.get("evidence_sha256")
+    )
 
 
 def invalidate_gate_meetings(state: dict[str, Any], gates: tuple[str, ...], reason: str) -> list[str]:
@@ -264,6 +422,12 @@ def invalidate_gate_meetings(state: dict[str, Any], gates: tuple[str, ...], reas
             meeting["superseded_at"] = now()
             meeting["superseded_reason"] = reason
             invalidated.append(str(meeting.get("id")))
+    for gate in gates:
+        approval = state.get("human_approvals", {}).get(gate)
+        if approval and approval.get("status") == "current":
+            approval["status"] = "superseded"
+            approval["superseded_at"] = now()
+            approval["superseded_reason"] = reason
     return invalidated
 
 
@@ -286,6 +450,8 @@ def stage_requirements(state: dict[str, Any]) -> tuple[list[str], list[str]]:
                     notes.append(f"{role} rejected {stage}")
         if not gate_meeting_ready(state, stage):
             missing.append(f"meeting:{stage}")
+        if human_approval_required(state, stage) and not human_approval_ready(state, stage):
+            missing.append(f"human_approval:{stage}")
 
     blockers = open_blockers(state)
     if blockers:
@@ -294,6 +460,18 @@ def stage_requirements(state: dict[str, Any]) -> tuple[list[str], list[str]]:
 
 
 def save_state(path: Path, state: dict[str, Any]) -> None:
+    expected_revision = state.get("revision", 0)
+    if path.exists():
+        on_disk = load_data(path)
+        actual_revision = on_disk.get("revision", 0)
+        if actual_revision != expected_revision:
+            raise WorkflowError(
+                f"Workflow state changed concurrently: expected revision "
+                f"{expected_revision}, found {actual_revision}."
+            )
+    state["schema_version"] = CURRENT_SCHEMA_VERSION
+    state["revision"] = expected_revision + 1
+    validate_state(state, path)
     save_data(path, state)
 
 
@@ -350,8 +528,7 @@ def cmd_init(args: argparse.Namespace) -> None:
         raise WorkflowError(f"Workflow {active} is already active. Complete it or use --force.")
 
     workflow_id = args.id or workflow_id_from_title(args.title)
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{2,80}", workflow_id):
-        raise WorkflowError("Workflow ID must be 3-81 characters using letters, digits, dot, underscore, or hyphen.")
+    validate_workflow_id(workflow_id)
     path = state_path(root, workflow_id)
     if path.exists() and not args.force:
         raise WorkflowError(f"Workflow already exists: {workflow_id}")
@@ -359,13 +536,14 @@ def cmd_init(args: argparse.Namespace) -> None:
     docs_dir = root / "docs" / "requirements" / workflow_id
     docs_dir.mkdir(parents=True, exist_ok=True)
     request_path = docs_dir / "00-original-request.md"
-    request_path.write_text(
+    atomic_write_text(
+        request_path,
         f"# Original request: {args.title}\n\n{args.request.strip()}\n",
-        encoding="utf-8",
     )
     timestamp = now()
     state: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": CURRENT_SCHEMA_VERSION,
+        "revision": 0,
         "workflow": {
             "id": workflow_id,
             "title": args.title,
@@ -385,11 +563,17 @@ def cmd_init(args: argparse.Namespace) -> None:
         },
         "issues": [],
         "decisions": {},
+        "human_approval_policy": {
+            "required_gates": list(dict.fromkeys(args.require_human_approval or []))
+        },
+        "human_approvals": {},
         "meetings": [],
         "history": [
             {"at": timestamp, "event": "initialized", "detail": f"Started {args.mode} workflow"}
         ],
     }
+    if args.force and path.exists():
+        state["revision"] = int(load_data(path).get("revision", 0))
     save_state(path, state)
     save_data(
         pointer,
@@ -417,6 +601,9 @@ def cmd_status(args: argparse.Namespace) -> None:
     print(f"Artifacts satisfied: {sum(artifact_ready(state, name) for name in ARTIFACTS)}")
     print(f"Meeting notes: {len(state.get('meetings', []))}")
     print(f"Open blockers: {len(blockers)}")
+    print(f"State revision: {state['revision']}")
+    required_human = state.get("human_approval_policy", {}).get("required_gates", [])
+    print("Human approval gates: " + (",".join(required_human) if required_human else "none"))
     missing, notes = stage_requirements(state)
     print("Can advance: " + ("yes" if not missing and workflow["status"] == "active" else "no"))
     for item in missing:
@@ -692,6 +879,49 @@ def cmd_record_meeting(args: argparse.Namespace) -> None:
     print(f"Recorded {meeting_id} ({args.type}): {relative}")
 
 
+def cmd_record_human_approval(args: argparse.Namespace) -> None:
+    root = repository_root(args.root)
+    path, state = load_state(root, args.id)
+    current = state["workflow"]["current_stage"]
+    if current != args.gate:
+        raise WorkflowError(f"Cannot approve {args.gate} while current stage is {current}.")
+    if not human_approval_required(state, args.gate):
+        raise WorkflowError(f"Human approval is not configured for {args.gate}.")
+    meeting = current_gate_meeting(state, args.gate)
+    if meeting is None:
+        raise WorkflowError("Human approval requires current approved gate meeting notes.")
+    evidence_path, evidence = repository_evidence_path(
+        root, args.evidence, minimum_chars=MIN_DOCUMENT_CHARS
+    )
+    evidence_text = evidence_path.read_text(encoding="utf-8")
+    for marker in (args.gate, args.approved_by, "approve"):
+        if not contains_marker(evidence_text, marker):
+            raise WorkflowError(f"Human approval evidence must identify: {marker}")
+    evidence_hash = content_sha256(evidence_path)
+    reserved_hashes = {
+        meeting.get("evidence_sha256"),
+        *(
+            decision.get("evidence_sha256")
+            for decision in state.get("decisions", {}).get(args.gate, {}).values()
+        ),
+    }
+    if evidence_hash in reserved_hashes:
+        raise WorkflowError("Human approval requires distinct evidence.")
+    state.setdefault("human_approvals", {})[args.gate] = {
+        "status": "current",
+        "approved_by": args.approved_by,
+        "notes": args.notes or "",
+        "evidence": str(evidence),
+        "evidence_sha256": evidence_hash,
+        "decision_snapshot": gate_decision_snapshot(state, args.gate),
+        "meeting_evidence_sha256": meeting.get("evidence_sha256"),
+        "at": now(),
+    }
+    add_history(state, "human_approval", f"{args.gate}:{args.approved_by}")
+    save_state(path, state)
+    print(f"Recorded human approval for {args.gate} by {args.approved_by}")
+
+
 def cmd_advance(args: argparse.Namespace) -> None:
     root = repository_root(args.root)
     path, state = load_state(root, args.id)
@@ -712,13 +942,14 @@ def cmd_advance(args: argparse.Namespace) -> None:
     workflow["current_stage"] = new_stage
     if new_stage == "completed":
         workflow["status"] = "completed"
+    add_history(state, "advanced", f"{stage}->{new_stage}")
+    save_state(path, state)
+    if new_stage == "completed":
         pointer = active_pointer(root)
         if pointer.exists():
             active = load_data(pointer)
             if active.get("workflow_id") == workflow["id"]:
                 pointer.unlink()
-    add_history(state, "advanced", f"{stage}->{new_stage}")
-    save_state(path, state)
     print(f"Advanced {stage} -> {new_stage}")
 
 
@@ -788,6 +1019,12 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--title", required=True)
     init.add_argument("--mode", choices=tuple(FLOWS), default="standard")
     init.add_argument("--request", required=True)
+    init.add_argument(
+        "--require-human-approval",
+        action="append",
+        choices=GATES,
+        help="Require a separately evidenced human approval at this gate; repeat as needed",
+    )
     init.add_argument("--force", action="store_true")
     init.set_defaults(func=cmd_init)
 
@@ -841,6 +1078,16 @@ def build_parser() -> argparse.ArgumentParser:
     meeting.add_argument("--path", required=True)
     meeting.set_defaults(func=cmd_record_meeting)
 
+    human = subparsers.add_parser(
+        "record-human-approval",
+        help="Record a human authorization bound to current reviews and meeting evidence",
+    )
+    human.add_argument("--gate", choices=GATES, required=True)
+    human.add_argument("--approved-by", required=True)
+    human.add_argument("--evidence", required=True)
+    human.add_argument("--notes")
+    human.set_defaults(func=cmd_record_human_approval)
+
     advance = subparsers.add_parser("advance", help="Advance only when deterministic gate requirements pass")
     advance.set_defaults(func=cmd_advance)
 
@@ -855,7 +1102,22 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     try:
-        args.func(args)
+        mutating = {
+            "init",
+            "record-artifact",
+            "add-issue",
+            "resolve-issue",
+            "decide",
+            "record-meeting",
+            "record-human-approval",
+            "advance",
+            "reopen",
+        }
+        if args.command in mutating:
+            with workflow_lock(repository_root(args.root)):
+                args.func(args)
+        else:
+            args.func(args)
         return 0
     except WorkflowError as exc:
         print(f"error: {exc}", file=sys.stderr)

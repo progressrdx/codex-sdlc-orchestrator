@@ -11,9 +11,11 @@ Keep the main thread focused on business decisions, state transitions, and synth
 
 1. Locate the repository root.
 2. Resolve this Skill's own directory from the loaded `SKILL.md` path and run `python3 <skill-dir>/scripts/workflow.py --root <repository-root> status`. Never assume the Skill lives inside the target repository.
-3. If no workflow exists and the user explicitly requested the formal process, initialize it with `init --title ... --mode standard --request ...`.
+3. If no workflow exists and the user explicitly requested the formal process, initialize it with `init --title ... --mode standard --request ...`. Add `--require-human-approval <gate>` for each configured human checkpoint.
 4. Run `next` before assigning work.
 5. Do not initialize a formal workflow from an ordinary coding request.
+
+Require a human checkpoint for destructive data changes, permission changes, production release authorization, security exceptions, legal/compliance decisions, or another irreversible/high-impact action. Use `readiness_review` when authorization is needed before implementation and `acceptance` when authorization is needed before final delivery. Tell the user which checkpoints were configured.
 
 Read [workflow-contract.md](references/workflow-contract.md) before the first state transition in a workflow.
 Use [meeting-notes-template.md](assets/meeting-notes-template.md) for every cross-role communication summary.
@@ -41,6 +43,8 @@ Use a role-named subagent task and include the role boundary plus the explicit b
 - Record design coordination as `design_sync`, implementation defects as `defect_triage`, requirement changes as `change_control`, and other cross-role discussions as `ad_hoc`.
 - Never infer `approve` from silence or from an artifact's existence.
 - Never let the implementer substitute for independent test approval.
+- At a configured human checkpoint, pause after current role verdicts and approved meeting notes. Present the evidence and ask the user or named authority for an explicit decision. Never manufacture, delegate, or infer human authorization.
+- After explicit authorization, preserve a concise approval record under `docs/requirements/<workflow-id>/approvals/` and call `record-human-approval`. The state tool binds it to the current review and meeting hashes; later evidence changes make it stale.
 - Ask the user only for unresolved business choices, authority, or scope changes.
 - Run `advance` only after recording role decisions and resolving blockers.
 - On rejection, keep the current gate, assign revisions, and review again.
@@ -51,7 +55,7 @@ Use a role-named subagent task and include the role boundary plus the explicit b
 Resolve `workflow.py` relative to this Skill and use `python3 <skill-dir>/scripts/workflow.py --root <repository-root> --help` for the complete interface. Common subcommands:
 
 ```text
-workflow.py init --title "..." --mode standard --request "..."
+workflow.py init --title "..." --mode standard --request "..." --require-human-approval acceptance
 workflow.py status
 workflow.py next
 workflow.py record-artifact --name prd --path docs/requirements/.../01-prd.md
@@ -59,6 +63,7 @@ workflow.py add-issue --source testing --severity blocker --summary "..."
 workflow.py resolve-issue --issue-id ISSUE-001 --resolved-by product --resolution "..." --evidence docs/requirements/.../01-prd.md
 workflow.py decide --gate prd_review --role testing --verdict approve --evidence docs/requirements/.../reviews/prd-testing.md
 workflow.py record-meeting --type prd_review --title "PRD review" --participants product,engineering,testing --outcome approved --path docs/requirements/.../meetings/MTG-001-prd-review.md
+workflow.py record-human-approval --gate acceptance --approved-by "release-owner" --evidence docs/requirements/.../approvals/acceptance.md
 workflow.py advance
 ```
 
