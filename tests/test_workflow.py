@@ -581,6 +581,96 @@ class WorkflowToolTests(unittest.TestCase):
         self.run_tool("advance")
         self.assertIn("Stage: design", self.run_tool("status").stdout)
 
+    def test_mutated_artifact_and_review_evidence_block_progress(self) -> None:
+        self.init()
+        self.run_tool("advance")
+        self.record("prd", "requirements/REQ-test-flow/01-prd.md")
+        prd_path = self.root / "docs" / "requirements" / "REQ-test-flow" / "01-prd.md"
+        prd_path.write_text(prd_path.read_text(encoding="utf-8") + "\nChanged after recording.\n", encoding="utf-8")
+        stale_artifact = self.run_tool("advance", expected=2)
+        self.assertIn("artifact:prd", stale_artifact.stderr)
+
+        self.record("prd", "requirements/REQ-test-flow/01-prd-v2.md")
+        self.run_tool("advance")
+        roles = ("product", "engineering", "testing")
+        self.approve("prd_review", roles)
+        review_path = self.root / "docs" / "requirements" / "REQ-test-flow" / "reviews" / "prd_review-product.md"
+        review_path.write_text(
+            review_path.read_text(encoding="utf-8") + "\nChanged after review.\n",
+            encoding="utf-8",
+        )
+        stale_review = self.run_tool("advance", expected=2)
+        self.assertIn("approval:prd_review:product", stale_review.stderr)
+
+    def test_changed_upstream_artifact_automatically_rewinds_workflow(self) -> None:
+        self.init()
+        self.run_tool("advance")
+        self.record("prd", "requirements/REQ-test-flow/01-prd.md")
+        self.run_tool("advance")
+        self.approve("prd_review", ("product", "engineering", "testing"))
+        self.run_tool("advance")
+        self.record("technical_design", "requirements/REQ-test-flow/03-design.md")
+        self.record("test_plan", "requirements/REQ-test-flow/05-test-plan.md")
+        self.run_tool("advance")
+        self.record("prd", "requirements/REQ-test-flow/01-prd-v2.md")
+
+        status = self.run_tool("status", "--json")
+        state = json.loads(status.stdout)
+        self.assertEqual("prd", state["workflow"]["current_stage"])
+        self.assertEqual("superseded", state["artifacts"]["technical_design"]["status"])
+        self.assertEqual("superseded", state["artifacts"]["test_plan"]["status"])
+        self.assertIn("change_control_required", [event["event"] for event in state["history"]])
+
+    def test_major_issue_requires_resolution_or_explicit_disposition_at_acceptance(self) -> None:
+        self.init("quick")
+        self.run_tool("advance")
+        self.record("technical_design", "requirements/REQ-test-flow/03-design.md")
+        self.record("test_plan", "requirements/REQ-test-flow/05-test-plan.md")
+        self.run_tool("advance")
+        self.approve("readiness_review", ("engineering", "testing"))
+        self.run_tool("advance")
+        self.record("implementation", "requirements/REQ-test-flow/06-implementation.md")
+        self.run_tool("advance")
+        self.record("verification_report", "requirements/REQ-test-flow/08-verification.md")
+        self.run_tool("advance")
+        self.record("delivery_report", "requirements/REQ-test-flow/09-delivery.md")
+        self.approve("acceptance", ("product", "engineering", "testing"))
+        self.run_tool(
+            "add-issue",
+            "--source",
+            "testing",
+            "--owner",
+            "product",
+            "--severity",
+            "major",
+            "--summary",
+            "Accessibility remediation is scheduled after this release.",
+        )
+        blocked = self.run_tool("advance", expected=2)
+        self.assertIn("major:ISSUE-001", blocked.stderr)
+        evidence = self.write_artifact(
+            "requirements/REQ-test-flow/decisions/ISSUE-001-risk.md",
+            "# ISSUE-001 accepted risk\n\n"
+            "## Authorization\n\nAlice accepts this accepted_risk for the documented release.\n\n"
+            "## Rationale\n\nThe remediation is scheduled and its remaining impact is understood.\n",
+        )
+        self.run_tool(
+            "disposition-issue",
+            "--issue-id",
+            "ISSUE-001",
+            "--disposition",
+            "accepted_risk",
+            "--approved-by",
+            "Alice",
+            "--rationale",
+            "Remediation is explicitly accepted for this release.",
+            "--evidence",
+            str(evidence.relative_to(self.root)),
+        )
+        self.approve("acceptance", ("product", "engineering", "testing"))
+        self.run_tool("advance")
+        self.assertIn("Status: completed", self.run_tool("--id", "REQ-test-flow", "status").stdout)
+
     @unittest.skipIf(fcntl is None, "POSIX lock test")
     def test_concurrent_writer_is_rejected(self) -> None:
         lock_key = hashlib.sha256(str(self.root.resolve()).encode("utf-8")).hexdigest()

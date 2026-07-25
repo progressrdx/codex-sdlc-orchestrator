@@ -55,8 +55,22 @@ ARTIFACTS = (
     "traceability",
 )
 ARTIFACT_STAGE = {
+    "original_request": "intake",
     "prd": "prd",
     "review_log": "prd_review",
+    "technical_design": "design",
+    "database_design": "design",
+    "test_plan": "design",
+    "test_cases": "design",
+    "release_plan": "design",
+    "implementation": "implementation",
+    "verification_report": "verification",
+    "traceability": "verification",
+    "delivery_report": "acceptance",
+}
+ARTIFACT_CHANGE_STAGE = {
+    "original_request": "intake",
+    "prd": "prd",
     "technical_design": "design",
     "database_design": "design",
     "test_plan": "design",
@@ -279,18 +293,47 @@ def state_path(root: Path, workflow_id: str | None = None) -> Path:
 def load_state(root: Path, workflow_id: str | None = None) -> tuple[Path, dict[str, Any]]:
     path = state_path(root, workflow_id)
     state = load_data(path)
-    migrate_state(state)
+    migrate_state(root, state)
     validate_state(state, path)
     return path, state
 
 
-def migrate_state(state: dict[str, Any]) -> None:
+def migrate_state(root: Path, state: dict[str, Any]) -> None:
     version = state.get("schema_version")
     if version == 1:
         state["schema_version"] = CURRENT_SCHEMA_VERSION
         state.setdefault("revision", 0)
         state.setdefault("human_approval_policy", {"required_gates": []})
         state.setdefault("human_approvals", {})
+    for collection in ("artifacts", "human_approvals"):
+        for item in state.get(collection, {}).values():
+            if item.get("status") == "not_applicable" or item.get("evidence_sha256"):
+                continue
+            try:
+                evidence_path, _ = repository_evidence_path(root, str(item.get("path", item.get("evidence", ""))))
+            except WorkflowError:
+                continue
+            if evidence_path.is_file():
+                item["evidence_sha256"] = content_sha256(evidence_path)
+    for decisions in state.get("decisions", {}).values():
+        for decision in decisions.values():
+            if decision.get("evidence_sha256"):
+                continue
+            try:
+                evidence_path, _ = repository_evidence_path(root, str(decision.get("evidence", "")))
+            except WorkflowError:
+                continue
+            if evidence_path.is_file():
+                decision["evidence_sha256"] = content_sha256(evidence_path)
+    for meeting in state.get("meetings", []):
+        if meeting.get("evidence_sha256"):
+            continue
+        try:
+            evidence_path, _ = repository_evidence_path(root, str(meeting.get("path", "")))
+        except WorkflowError:
+            continue
+        if evidence_path.is_file():
+            meeting["evidence_sha256"] = content_sha256(evidence_path)
 
 
 def validate_state(state: dict[str, Any], path: Path) -> None:
@@ -337,9 +380,24 @@ def add_history(state: dict[str, Any], event: str, detail: str) -> None:
     state["workflow"]["updated_at"] = now()
 
 
-def artifact_ready(state: dict[str, Any], name: str) -> bool:
+def evidence_matches(root: Path, raw_path: str, expected_hash: str | None) -> bool:
+    """Return whether an indexed repository file still has its recorded content."""
+    if not expected_hash:
+        return False
+    try:
+        evidence_path, _ = repository_evidence_path(root, raw_path)
+    except WorkflowError:
+        return False
+    return evidence_path.is_file() and content_sha256(evidence_path) == expected_hash
+
+
+def artifact_ready(root: Path, state: dict[str, Any], name: str) -> bool:
     item = state.get("artifacts", {}).get(name, {})
-    return item.get("status") in {"ready", "not_applicable"}
+    if item.get("status") == "not_applicable":
+        return True
+    return item.get("status") == "ready" and evidence_matches(
+        root, str(item.get("path", "")), item.get("evidence_sha256")
+    )
 
 
 def open_blockers(state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -377,13 +435,22 @@ def gate_decision_snapshot(state: dict[str, Any], gate: str) -> dict[str, str]:
     }
 
 
-def gate_meeting_ready(state: dict[str, Any], gate: str) -> bool:
-    return current_gate_meeting(state, gate) is not None
+def gate_meeting_ready(root: Path, state: dict[str, Any], gate: str) -> bool:
+    return current_gate_meeting(root, state, gate) is not None
 
 
-def current_gate_meeting(state: dict[str, Any], gate: str) -> dict[str, Any] | None:
+def decision_is_current(root: Path, decision: dict[str, Any]) -> bool:
+    return evidence_matches(
+        root, str(decision.get("evidence", "")), decision.get("evidence_sha256")
+    )
+
+
+def current_gate_meeting(root: Path, state: dict[str, Any], gate: str) -> dict[str, Any] | None:
     required_roles = set(required_gate_roles(state, gate))
     snapshot = gate_decision_snapshot(state, gate)
+    decisions = state.get("decisions", {}).get(gate, {})
+    if any(not decision_is_current(root, decisions.get(role, {})) for role in required_roles):
+        return None
     for meeting in reversed(state.get("meetings", [])):
         if (
             meeting.get("status") == "current"
@@ -392,6 +459,9 @@ def current_gate_meeting(state: dict[str, Any], gate: str) -> dict[str, Any] | N
             and meeting.get("outcome") == "approved"
             and required_roles.issubset(set(meeting.get("participants", [])))
             and meeting.get("decision_snapshot") == snapshot
+            and evidence_matches(
+                root, str(meeting.get("path", "")), meeting.get("evidence_sha256")
+            )
         ):
             return meeting
     return None
@@ -401,16 +471,19 @@ def human_approval_required(state: dict[str, Any], gate: str) -> bool:
     return gate in state.get("human_approval_policy", {}).get("required_gates", [])
 
 
-def human_approval_ready(state: dict[str, Any], gate: str) -> bool:
+def human_approval_ready(root: Path, state: dict[str, Any], gate: str) -> bool:
     if not human_approval_required(state, gate):
         return True
-    meeting = current_gate_meeting(state, gate)
+    meeting = current_gate_meeting(root, state, gate)
     approval = state.get("human_approvals", {}).get(gate, {})
     return bool(
         meeting
         and approval.get("status") == "current"
         and approval.get("decision_snapshot") == gate_decision_snapshot(state, gate)
         and approval.get("meeting_evidence_sha256") == meeting.get("evidence_sha256")
+        and evidence_matches(
+            root, str(approval.get("evidence", "")), approval.get("evidence_sha256")
+        )
     )
 
 
@@ -431,31 +504,95 @@ def invalidate_gate_meetings(state: dict[str, Any], gates: tuple[str, ...], reas
     return invalidated
 
 
-def stage_requirements(state: dict[str, Any]) -> tuple[list[str], list[str]]:
+def rewind_workflow(
+    state: dict[str, Any],
+    stage: str,
+    reason: str,
+    *,
+    preserve_artifacts: set[str] | None = None,
+) -> tuple[str, list[str], list[str]]:
+    """Return a workflow to an affected stage and supersede downstream evidence."""
+    preserve_artifacts = preserve_artifacts or set()
+    mode = state["workflow"]["mode"]
+    stages = FLOWS[mode]
+    if stage not in stages or stage == "completed":
+        raise WorkflowError(f"Stage {stage} is not valid for {mode} mode.")
+    old_stage = state["workflow"]["current_stage"]
+    rewind_index = stages.index(stage)
+    state["workflow"]["current_stage"] = stage
+    state["workflow"]["status"] = "active"
+
+    for gate in list(state.get("decisions", {})):
+        if gate in stages and stages.index(gate) >= rewind_index:
+            del state["decisions"][gate]
+
+    invalidated_meetings: list[str] = []
+    for meeting in state.get("meetings", []):
+        meeting_stage = meeting.get("stage")
+        if (
+            meeting.get("status") == "current"
+            and meeting_stage in stages
+            and stages.index(meeting_stage) >= rewind_index
+        ):
+            meeting["status"] = "superseded"
+            meeting["superseded_at"] = now()
+            meeting["superseded_reason"] = reason
+            invalidated_meetings.append(str(meeting.get("id")))
+
+    for gate, approval in state.get("human_approvals", {}).items():
+        if (
+            approval.get("status") == "current"
+            and gate in stages
+            and stages.index(gate) >= rewind_index
+        ):
+            approval["status"] = "superseded"
+            approval["superseded_at"] = now()
+            approval["superseded_reason"] = reason
+
+    invalidated_artifacts: list[str] = []
+    for name, produced_at in ARTIFACT_STAGE.items():
+        if name in preserve_artifacts or produced_at not in stages:
+            continue
+        if stages.index(produced_at) >= rewind_index:
+            artifact = state.get("artifacts", {}).get(name)
+            if artifact and artifact.get("status") in {"ready", "not_applicable"}:
+                artifact["status"] = "superseded"
+                artifact["updated_at"] = now()
+                invalidated_artifacts.append(name)
+    return old_stage, invalidated_artifacts, invalidated_meetings
+
+
+def stage_requirements(root: Path, state: dict[str, Any]) -> tuple[list[str], list[str]]:
     stage = state["workflow"]["current_stage"]
     missing: list[str] = []
     notes: list[str] = []
 
     for name in required_artifacts(state, stage):
-        if not artifact_ready(state, name):
+        if not artifact_ready(root, state, name):
             missing.append(f"artifact:{name}")
 
     if stage in GATES:
         decisions = state.get("decisions", {}).get(stage, {})
         for role in required_gate_roles(state, stage):
             verdict = decisions.get(role, {}).get("verdict")
-            if verdict != "approve":
+            if verdict != "approve" or not decision_is_current(root, decisions.get(role, {})):
                 missing.append(f"approval:{stage}:{role}")
                 if verdict == "reject":
                     notes.append(f"{role} rejected {stage}")
-        if not gate_meeting_ready(state, stage):
+        if not gate_meeting_ready(root, state, stage):
             missing.append(f"meeting:{stage}")
-        if human_approval_required(state, stage) and not human_approval_ready(state, stage):
+        if human_approval_required(state, stage) and not human_approval_ready(root, state, stage):
             missing.append(f"human_approval:{stage}")
 
     blockers = open_blockers(state)
     if blockers:
         missing.extend(f"blocker:{item['id']}" for item in blockers)
+    if stage == "acceptance":
+        missing.extend(
+            f"major:{item['id']}"
+            for item in state.get("issues", [])
+            if item.get("severity") == "major" and item.get("status") == "open"
+        )
     return missing, notes
 
 
@@ -557,6 +694,7 @@ def cmd_init(args: argparse.Namespace) -> None:
             "original_request": {
                 "path": str(request_path.relative_to(root)),
                 "status": "ready",
+                "evidence_sha256": content_sha256(request_path),
                 "updated_at": timestamp,
                 "notes": "Captured during workflow initialization.",
             }
@@ -598,13 +736,13 @@ def cmd_status(args: argparse.Namespace) -> None:
     blockers = open_blockers(state)
     print(f"Workflow: {workflow['id']} — {workflow['title']}")
     print(f"Mode: {workflow['mode']}  Status: {workflow['status']}  Stage: {workflow['current_stage']}")
-    print(f"Artifacts satisfied: {sum(artifact_ready(state, name) for name in ARTIFACTS)}")
+    print(f"Artifacts satisfied: {sum(artifact_ready(root, state, name) for name in ARTIFACTS)}")
     print(f"Meeting notes: {len(state.get('meetings', []))}")
     print(f"Open blockers: {len(blockers)}")
     print(f"State revision: {state['revision']}")
     required_human = state.get("human_approval_policy", {}).get("required_gates", [])
     print("Human approval gates: " + (",".join(required_human) if required_human else "none"))
-    missing, notes = stage_requirements(state)
+    missing, notes = stage_requirements(root, state)
     print("Can advance: " + ("yes" if not missing and workflow["status"] == "active" else "no"))
     for item in missing:
         print(f"- {item}")
@@ -620,7 +758,7 @@ def cmd_next(args: argparse.Namespace) -> None:
     if stage == "completed":
         print("Workflow is complete. No next action.")
         return
-    missing, notes = stage_requirements(state)
+    missing, notes = stage_requirements(root, state)
     print(f"Current stage: {stage}")
     if missing:
         print("Required before advancing:")
@@ -648,29 +786,58 @@ def cmd_record_artifact(args: argparse.Namespace) -> None:
     for other_name, other in state.get("artifacts", {}).items():
         if other_name != args.name and other.get("path") == str(relative) and other.get("status") != "superseded":
             raise WorkflowError(f"Artifact path is already used by {other_name}: {relative}")
+    previous = state.get("artifacts", {}).get(args.name, {})
+    next_hash = content_sha256(absolute) if args.status == "ready" else None
+    changed = bool(previous) and (
+        previous.get("path") != str(relative)
+        or previous.get("status") != args.status
+        or previous.get("evidence_sha256") != next_hash
+        or previous.get("notes", "") != (args.notes or "")
+    )
     state.setdefault("artifacts", {})[args.name] = {
         "path": str(relative),
         "status": args.status,
+        "evidence_sha256": next_hash,
         "updated_at": now(),
         "notes": args.notes or "",
     }
     invalidated: list[str] = []
-    for gate in ARTIFACT_INVALIDATES_GATES.get(args.name, ()):
-        if gate in state.get("decisions", {}):
-            del state["decisions"][gate]
-            invalidated.append(gate)
-    invalidated_meetings = invalidate_gate_meetings(
-        state,
-        tuple(ARTIFACT_INVALIDATES_GATES.get(args.name, ())),
-        f"Artifact {args.name} changed",
-    )
+    invalidated_meetings: list[str] = []
+    automatic_rewind = ""
+    if changed and args.name in ARTIFACT_CHANGE_STAGE:
+        affected_stage = ARTIFACT_CHANGE_STAGE[args.name]
+        stages = FLOWS[state["workflow"]["mode"]]
+        if stages.index(state["workflow"]["current_stage"]) >= stages.index(affected_stage):
+            old_stage, invalidated_artifacts, invalidated_meetings = rewind_workflow(
+                state,
+                affected_stage,
+                f"Artifact {args.name} changed",
+                preserve_artifacts={args.name},
+            )
+            automatic_rewind = f"{old_stage}->{affected_stage}"
+            if invalidated_artifacts:
+                add_history(state, "artifacts_invalidated", ",".join(invalidated_artifacts))
+    else:
+        for gate in ARTIFACT_INVALIDATES_GATES.get(args.name, ()):
+            if gate in state.get("decisions", {}):
+                del state["decisions"][gate]
+                invalidated.append(gate)
+        invalidated_meetings = invalidate_gate_meetings(
+            state,
+            tuple(ARTIFACT_INVALIDATES_GATES.get(args.name, ())),
+            f"Artifact {args.name} changed",
+        )
     add_history(state, "artifact_recorded", f"{args.name}={args.status}:{relative}")
+    if automatic_rewind:
+        add_history(state, "change_control_required", f"{args.name}:{automatic_rewind}")
     if invalidated:
         add_history(state, "decisions_invalidated", f"{args.name}:{','.join(invalidated)}")
     if invalidated_meetings:
         add_history(state, "meetings_invalidated", ",".join(invalidated_meetings))
     save_state(path, state)
     print(f"Recorded artifact {args.name} ({args.status}): {relative}")
+    if automatic_rewind:
+        print(f"Change detected; workflow automatically rewound: {automatic_rewind}")
 
 
 def next_issue_id(state: dict[str, Any]) -> str:
@@ -729,8 +896,8 @@ def cmd_resolve_issue(args: argparse.Namespace) -> None:
     evidence_hash = content_sha256(evidence_path)
     for issue in state.get("issues", []):
         if issue.get("id") == args.issue_id:
-            if issue.get("status") == "resolved":
-                raise WorkflowError(f"Issue already resolved: {args.issue_id}")
+            if issue.get("status") != "open":
+                raise WorkflowError(f"Issue is already dispositioned: {args.issue_id}")
             if args.resolved_by != issue.get("owner"):
                 raise WorkflowError(
                     f"Issue owner is {issue.get('owner')}; got resolved_by={args.resolved_by}."
@@ -765,6 +932,61 @@ def cmd_resolve_issue(args: argparse.Namespace) -> None:
             save_state(path, state)
             print(f"Resolved {args.issue_id}")
             return
+    raise WorkflowError(f"Unknown issue: {args.issue_id}")
+
+
+def cmd_disposition_issue(args: argparse.Namespace) -> None:
+    """Record an explicit, evidenced acceptance or deferral for a major issue."""
+    root = repository_root(args.root)
+    path, state = load_state(root, args.id)
+    evidence_path, evidence = repository_evidence_path(
+        root, args.evidence, minimum_chars=MIN_DOCUMENT_CHARS
+    )
+    require_markdown_structure(evidence_path)
+    evidence_text = evidence_path.read_text(encoding="utf-8")
+    for marker in (args.issue_id, args.disposition, args.approved_by):
+        if not contains_marker(evidence_text, marker):
+            raise WorkflowError(f"Disposition evidence must identify: {marker}")
+    if args.disposition == "deferred" and not args.due_date:
+        raise WorkflowError("A deferred issue requires --due-date (YYYY-MM-DD).")
+    if args.due_date and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", args.due_date):
+        raise WorkflowError("Due date must use YYYY-MM-DD.")
+    evidence_hash = content_sha256(evidence_path)
+    for issue in state.get("issues", []):
+        if issue.get("id") != args.issue_id:
+            continue
+        if issue.get("severity") != "major":
+            raise WorkflowError("Only major issues require an explicit disposition.")
+        if issue.get("status") != "open":
+            raise WorkflowError(f"Issue is already dispositioned: {args.issue_id}")
+        if any(
+            other.get("resolution_evidence_sha256") == evidence_hash
+            or other.get("disposition_evidence_sha256") == evidence_hash
+            for other in state.get("issues", [])
+        ):
+            raise WorkflowError("Disposition evidence is already used by another issue.")
+        issue["status"] = args.disposition
+        issue["disposition"] = args.disposition
+        issue["disposition_rationale"] = args.rationale
+        issue["disposition_approved_by"] = args.approved_by
+        issue["disposition_evidence"] = str(evidence)
+        issue["disposition_evidence_sha256"] = evidence_hash
+        issue["due_date"] = args.due_date
+        issue["dispositioned_at"] = now()
+        current_stage = state["workflow"]["current_stage"]
+        invalidated_meetings = (
+            invalidate_gate_meetings(
+                state, (current_stage,), f"Issue {args.issue_id} dispositioned"
+            )
+            if current_stage in GATES
+            else []
+        )
+        add_history(state, "issue_dispositioned", f"{args.issue_id}:{args.disposition}")
+        if invalidated_meetings:
+            add_history(state, "meetings_invalidated", ",".join(invalidated_meetings))
+        save_state(path, state)
+        print(f"Recorded {args.disposition} for {args.issue_id}")
+        return
     raise WorkflowError(f"Unknown issue: {args.issue_id}")
 
 
@@ -887,7 +1109,7 @@ def cmd_record_human_approval(args: argparse.Namespace) -> None:
         raise WorkflowError(f"Cannot approve {args.gate} while current stage is {current}.")
     if not human_approval_required(state, args.gate):
         raise WorkflowError(f"Human approval is not configured for {args.gate}.")
-    meeting = current_gate_meeting(state, args.gate)
+    meeting = current_gate_meeting(root, state, args.gate)
     if meeting is None:
         raise WorkflowError("Human approval requires current approved gate meeting notes.")
     evidence_path, evidence = repository_evidence_path(
@@ -931,7 +1153,7 @@ def cmd_advance(args: argparse.Namespace) -> None:
     stage = workflow["current_stage"]
     if stage == "completed":
         raise WorkflowError("Workflow is already complete.")
-    missing, notes = stage_requirements(state)
+    missing, notes = stage_requirements(root, state)
     if missing:
         detail = ", ".join(missing)
         if notes:
@@ -956,37 +1178,9 @@ def cmd_advance(args: argparse.Namespace) -> None:
 def cmd_reopen(args: argparse.Namespace) -> None:
     root = repository_root(args.root)
     path, state = load_state(root, args.id)
-    mode = state["workflow"]["mode"]
-    if args.stage not in FLOWS[mode] or args.stage == "completed":
-        raise WorkflowError(f"Stage {args.stage} is not valid for {mode} mode.")
-    old_stage = state["workflow"]["current_stage"]
-    state["workflow"]["current_stage"] = args.stage
-    state["workflow"]["status"] = "active"
-    stages = FLOWS[mode]
-    reopened_index = stages.index(args.stage)
-    for gate in list(state.get("decisions", {})):
-        if gate in stages and stages.index(gate) >= reopened_index:
-            del state["decisions"][gate]
-    invalidated_meetings: list[str] = []
-    for meeting in state.get("meetings", []):
-        meeting_stage = meeting.get("stage")
-        if (
-            meeting.get("status") == "current"
-            and meeting_stage in stages
-            and stages.index(meeting_stage) >= reopened_index
-        ):
-            meeting["status"] = "superseded"
-            meeting["superseded_at"] = now()
-            meeting["superseded_reason"] = f"Workflow reopened at {args.stage}"
-            invalidated_meetings.append(str(meeting.get("id")))
-    invalidated_artifacts: list[str] = []
-    for name, produced_at in ARTIFACT_STAGE.items():
-        if produced_at in stages and stages.index(produced_at) >= reopened_index:
-            artifact = state.get("artifacts", {}).get(name)
-            if artifact and artifact.get("status") in {"ready", "not_applicable"}:
-                artifact["status"] = "superseded"
-                artifact["updated_at"] = now()
-                invalidated_artifacts.append(name)
+    old_stage, invalidated_artifacts, invalidated_meetings = rewind_workflow(
+        state, args.stage, f"Workflow reopened at {args.stage}"
+    )
     add_history(state, "reopened", f"{old_stage}->{args.stage}:{args.reason}")
     if invalidated_artifacts:
         add_history(state, "artifacts_invalidated", ",".join(invalidated_artifacts))
@@ -1056,6 +1250,18 @@ def build_parser() -> argparse.ArgumentParser:
     resolve.add_argument("--evidence", required=True, help="Repository file documenting the resolution")
     resolve.set_defaults(func=cmd_resolve_issue)
 
+    disposition = subparsers.add_parser(
+        "disposition-issue",
+        help="Record an evidenced human acceptance or scheduled deferral for a major issue",
+    )
+    disposition.add_argument("--issue-id", required=True)
+    disposition.add_argument("--disposition", choices=("accepted_risk", "deferred"), required=True)
+    disposition.add_argument("--approved-by", required=True)
+    disposition.add_argument("--rationale", required=True)
+    disposition.add_argument("--evidence", required=True)
+    disposition.add_argument("--due-date", help="Required for deferred issues; YYYY-MM-DD")
+    disposition.set_defaults(func=cmd_disposition_issue)
+
     decide = subparsers.add_parser("decide", help="Record an independent role verdict at the current gate")
     decide.add_argument("--gate", choices=GATES, required=True)
     decide.add_argument("--role", choices=ROLES, required=True)
@@ -1107,6 +1313,7 @@ def main() -> int:
             "record-artifact",
             "add-issue",
             "resolve-issue",
+            "disposition-issue",
             "decide",
             "record-meeting",
             "record-human-approval",

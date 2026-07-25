@@ -80,7 +80,9 @@ Workflow state uses:
 - A monotonic revision checked before every update.
 - Atomic file replacement with flushed data.
 - A repository-scoped cross-process writer lock.
-- Evidence hashes that make stale meetings and human approvals unusable.
+- Live evidence hashes: changing an indexed artifact, review, meeting note, or human-approval file blocks further gate advancement until refreshed.
+- Automatic rollback to the earliest affected stage when an upstream artifact changes.
+- Formal major-issue disposition: acceptance blocks on open major findings unless a named authority records an evidenced risk acceptance or scheduled deferral.
 
 These are local consistency controls, not identity authentication or tamper-proof audit guarantees. See [SECURITY.md](SECURITY.md) and [THREAT_MODEL.md](THREAT_MODEL.md).
 

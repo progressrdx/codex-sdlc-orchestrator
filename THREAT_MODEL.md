@@ -35,7 +35,7 @@ A developer may modify tests, provide a misleading summary, or manufacture evide
 
 ### Evidence reuse or mutation
 
-One file may be reused for multiple roles or changed after approval. The state tool rejects reused review hashes, snapshots role verdict hashes in meeting records, and binds human approval to current meeting and decision hashes.
+One file may be reused for multiple roles or changed after approval. The state tool rejects reused review hashes, rechecks indexed evidence hashes at gates, snapshots role verdict hashes in meeting records, and binds human approval to current meeting and decision hashes.
 
 ### Path escape
 

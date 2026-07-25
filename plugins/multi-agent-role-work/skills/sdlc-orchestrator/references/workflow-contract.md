@@ -18,6 +18,8 @@ All durable artifacts belong under `docs/requirements/<workflow-id>/`. The state
 
 At each configured gate, every required role must submit an explicit verdict. A rejection is not averaged away. Resolve blockers, revise the artifact, reset stale approvals, and review again.
 
+An open `major` issue blocks acceptance. It must be resolved, or be explicitly dispositioned as `accepted_risk` or `deferred` by a named human authority with separate evidence. A deferred issue also records a due date. Minor issues remain visible but do not independently block a gate.
+
 ## Human authorization
 
 Human authorization is distinct from AI review. Configure it at initialization for any gate that controls destructive data changes, permissions, production release, security exceptions, legal/compliance decisions, or another irreversible or high-impact action.
@@ -47,9 +49,11 @@ When an approved requirement changes:
 4. Update traceability and rerun affected tests.
 5. Record a `change_control` meeting when multiple roles discuss the change.
 
+The state tool automatically rewinds to the earliest affected stage when a recorded artifact changes and supersedes downstream state. This is a safety floor, not a substitute for the required change-control discussion.
+
 ## Evidence
 
-Statements such as “implemented”, “tested”, or “approved” require a path, command result, review record, or other inspectable evidence. Never use confidence language as evidence.
+Statements such as “implemented”, “tested”, or “approved” require a path, command result, review record, or other inspectable evidence. Never use confidence language as evidence. Evidence hashes are rechecked when a gate is evaluated; changing an indexed artifact, review, meeting record, or human approval makes it stale until it is re-recorded and, where applicable, re-reviewed.
 
 The state script is not an authentication boundary. Enforce reviewer independence operationally by delegating to separate agents, using unique review files, and preserving their unedited findings. Deterministic checks reject missing or trivial evidence but cannot prove that a document is correct.
 

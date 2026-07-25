@@ -1,6 +1,6 @@
 {
   "name": "multi-agent-role-work",
-  "version": "1.1.0+codex.20260724122429",
+  "version": "1.1.0+codex.20260725050142",
   "description": "A reliable multi-role SDLC workflow for Codex with review gates, human checkpoints, atomic state, and meeting records.",
   "author": {
     "name": "progressrdx",
