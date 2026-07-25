@@ -20,7 +20,7 @@ Open the project in Codex and say:
 启动标准研发流程：实现会员积分过期功能。
 ```
 
-The natural-language phrase is enough. `$sdlc-orchestrator` remains available when an explicit Skill invocation is preferred:
+The natural-language phrase is enough. The coordinator initializes the workflow with the friendly `start` entry, records your original request, and immediately reports the current stage and next action. `$sdlc-orchestrator` remains available when an explicit Skill invocation is preferred:
 
 ```text
 使用 $sdlc-orchestrator 启动标准研发流程：实现会员积分过期功能。
@@ -33,6 +33,8 @@ To inspect or continue:
 当前流程进行到哪一步？
 查看当前阻塞问题和待办事项。
 ```
+
+Those progress checks use the workflow `overview`, which summarizes the active stage, whether the gate can advance, missing evidence, open issues, meeting records, and human approval checkpoints.
 
 Ordinary coding, explanation, and isolated-fix requests do not activate the formal workflow.
 

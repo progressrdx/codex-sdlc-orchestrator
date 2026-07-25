@@ -149,6 +149,28 @@ GATE_ROLES = {
     "standard": {gate: ROLES for gate in GATES},
     "strict": {gate: ROLES for gate in GATES},
 }
+STAGE_LABELS = {
+    "intake": "Intake",
+    "prd": "PRD drafting",
+    "prd_review": "PRD review",
+    "design": "Design and test planning",
+    "readiness_review": "Readiness review",
+    "implementation": "Implementation",
+    "verification": "Verification",
+    "acceptance": "Acceptance",
+    "completed": "Completed",
+}
+STAGE_GUIDANCE = {
+    "intake": "Confirm scope and advance into the selected workflow.",
+    "prd": "Have product create or revise the PRD, then record the PRD artifact.",
+    "prd_review": "Collect independent product, engineering, and testing verdicts, then record gate meeting notes.",
+    "design": "Create technical design and test plan artifacts; strict mode may also need database and release plans.",
+    "readiness_review": "Review whether implementation can start, record role verdicts, and preserve meeting notes.",
+    "implementation": "Implement the approved scope and record implementation evidence.",
+    "verification": "Run verification, record the report, and triage any defects.",
+    "acceptance": "Review delivery evidence, handle major findings, and record final acceptance.",
+    "completed": "No next workflow action is required.",
+}
 
 
 class WorkflowError(RuntimeError):
@@ -375,6 +397,14 @@ def workflow_id_from_title(title: str) -> str:
     return f"REQ-{timestamp}-{slug}"
 
 
+def title_from_request(request: str) -> str:
+    compact = " ".join(request.strip().split())
+    if not compact:
+        return "Requirement"
+    sentence = re.split(r"[。.!?]\s*", compact, maxsplit=1)[0].strip()
+    return sentence[:60] or "Requirement"
+
+
 def add_history(state: dict[str, Any], event: str, detail: str) -> None:
     state.setdefault("history", []).append({"at": now(), "event": event, "detail": detail})
     state["workflow"]["updated_at"] = now()
@@ -596,6 +626,99 @@ def stage_requirements(root: Path, state: dict[str, Any]) -> tuple[list[str], li
     return missing, notes
 
 
+def outstanding_issues(state: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        issue
+        for issue in state.get("issues", [])
+        if issue.get("status") in {"open", "accepted_risk", "deferred"}
+    ]
+
+
+def completed_artifacts(root: Path, state: dict[str, Any]) -> list[str]:
+    return [name for name in ARTIFACTS if artifact_ready(root, state, name)]
+
+
+def next_stage_name(state: dict[str, Any]) -> str | None:
+    workflow = state["workflow"]
+    stage = workflow["current_stage"]
+    if stage == "completed":
+        return None
+    stages = FLOWS[workflow["mode"]]
+    index = stages.index(stage)
+    if index + 1 >= len(stages):
+        return None
+    return stages[index + 1]
+
+
+def overview_payload(root: Path, state: dict[str, Any]) -> dict[str, Any]:
+    workflow = state["workflow"]
+    stage = workflow["current_stage"]
+    missing, notes = stage_requirements(root, state)
+    next_stage = None if missing else next_stage_name(state)
+    return {
+        "workflow_id": workflow["id"],
+        "title": workflow["title"],
+        "mode": workflow["mode"],
+        "status": workflow["status"],
+        "stage": stage,
+        "stage_label": STAGE_LABELS.get(stage, stage),
+        "can_advance": workflow["status"] == "active" and not missing,
+        "next_stage": next_stage,
+        "next_stage_label": STAGE_LABELS.get(next_stage, next_stage) if next_stage else None,
+        "next_action": (
+            f"Advance to {STAGE_LABELS.get(next_stage, next_stage)}."
+            if next_stage and not missing
+            else STAGE_GUIDANCE.get(stage, "Continue the current workflow stage.")
+        ),
+        "missing": missing,
+        "notes": notes,
+        "completed_artifacts": completed_artifacts(root, state),
+        "outstanding_issues": [
+            {
+                "id": issue.get("id"),
+                "severity": issue.get("severity"),
+                "status": issue.get("status"),
+                "owner": issue.get("owner"),
+                "summary": issue.get("summary"),
+            }
+            for issue in outstanding_issues(state)
+        ],
+        "meeting_notes": len(state.get("meetings", [])),
+        "state_revision": state["revision"],
+        "human_approval_gates": state.get("human_approval_policy", {}).get("required_gates", []),
+    }
+
+
+def print_overview(payload: dict[str, Any]) -> None:
+    print(f"Workflow: {payload['workflow_id']} — {payload['title']}")
+    print(
+        f"Stage: {payload['stage']} ({payload['stage_label']})  "
+        f"Mode: {payload['mode']}  Status: {payload['status']}"
+    )
+    print(f"Can advance: {'yes' if payload['can_advance'] else 'no'}")
+    print(f"Next action: {payload['next_action']}")
+    if payload["completed_artifacts"]:
+        print("Completed artifacts: " + ", ".join(payload["completed_artifacts"]))
+    else:
+        print("Completed artifacts: none")
+    if payload["missing"]:
+        print("Required now:")
+        for item in payload["missing"]:
+            print(f"- {item}")
+    if payload["outstanding_issues"]:
+        print("Open or carried issues:")
+        for issue in payload["outstanding_issues"]:
+            print(
+                f"- {issue['id']} {issue['severity']} {issue['status']} "
+                f"owner={issue['owner']}: {issue['summary']}"
+            )
+    else:
+        print("Open or carried issues: none")
+    print(f"Meeting notes: {payload['meeting_notes']}")
+    gates = payload["human_approval_gates"]
+    print("Human approval gates: " + (",".join(gates) if gates else "none"))
+
+
 def save_state(path: Path, state: dict[str, Any]) -> None:
     expected_revision = state.get("revision", 0)
     if path.exists():
@@ -726,6 +849,17 @@ def cmd_init(args: argparse.Namespace) -> None:
     print(f"Artifacts: {docs_dir.relative_to(root)}")
 
 
+def cmd_start(args: argparse.Namespace) -> None:
+    if not getattr(args, "title", None):
+        args.title = title_from_request(args.request)
+    cmd_init(args)
+    root = repository_root(args.root)
+    _, state = load_state(root, getattr(args, "id", None))
+    print()
+    print("Overview:")
+    print_overview(overview_payload(root, state))
+
+
 def cmd_status(args: argparse.Namespace) -> None:
     root = repository_root(args.root)
     _, state = load_state(root, args.id)
@@ -748,6 +882,16 @@ def cmd_status(args: argparse.Namespace) -> None:
         print(f"- {item}")
     for item in notes:
         print(f"- note:{item}")
+
+
+def cmd_overview(args: argparse.Namespace) -> None:
+    root = repository_root(args.root)
+    _, state = load_state(root, args.id)
+    payload = overview_payload(root, state)
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return
+    print_overview(payload)
 
 
 def cmd_next(args: argparse.Namespace) -> None:
@@ -1222,9 +1366,33 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--force", action="store_true")
     init.set_defaults(func=cmd_init)
 
+    start = subparsers.add_parser(
+        "start", help="Start a workflow from a plain-language requirement and print an overview"
+    )
+    start.add_argument(
+        "--id",
+        default=argparse.SUPPRESS,
+        help="Workflow ID; generated from the title when omitted",
+    )
+    start.add_argument("--request", required=True)
+    start.add_argument("--title", help="Optional short title; defaults to the first request sentence")
+    start.add_argument("--mode", choices=tuple(FLOWS), default="standard")
+    start.add_argument(
+        "--require-human-approval",
+        action="append",
+        choices=GATES,
+        help="Require a separately evidenced human approval at this gate; repeat as needed",
+    )
+    start.add_argument("--force", action="store_true")
+    start.set_defaults(func=cmd_start)
+
     status = subparsers.add_parser("status", help="Show workflow status")
     status.add_argument("--json", action="store_true")
     status.set_defaults(func=cmd_status)
+
+    overview = subparsers.add_parser("overview", help="Show a concise progress report")
+    overview.add_argument("--json", action="store_true")
+    overview.set_defaults(func=cmd_overview)
 
     next_cmd = subparsers.add_parser("next", help="Show the next required evidence or transition")
     next_cmd.set_defaults(func=cmd_next)
@@ -1310,6 +1478,7 @@ def main() -> int:
     try:
         mutating = {
             "init",
+            "start",
             "record-artifact",
             "add-issue",
             "resolve-issue",

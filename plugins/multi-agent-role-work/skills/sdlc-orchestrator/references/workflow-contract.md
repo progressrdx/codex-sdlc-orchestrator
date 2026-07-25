@@ -4,6 +4,8 @@
 
 The formal workflow starts only from an explicit user request. An active workflow continues when `.ai-workflow/active.yaml` exists and the user asks to continue or change that requirement. Ordinary questions and isolated edits stay outside the workflow.
 
+Use `start --request "..."` as the default initialization path for natural-language requests. It captures the original request, derives a usable title when none is supplied, and prints the same progress summary that `overview` returns later.
+
 ## Modes
 
 - `quick`: intake, lightweight design/test planning, implementation, verification, acceptance. Use for low-risk, localized work.
@@ -60,3 +62,5 @@ The state script is not an authentication boundary. Enforce reviewer independenc
 ## State integrity
 
 State files use a versioned schema, monotonic revision, atomic replacement, and a repository-scoped cross-process writer lock. A stale writer is rejected when the on-disk revision differs from the revision it loaded. These controls protect local consistency; they do not resolve Git merge conflicts or provide tamper-proof audit history.
+
+Use `overview` for handoffs and progress checks. It reports the active stage, whether advancement is currently allowed, missing evidence, open or carried issues, meeting-note count, and configured human approval gates.

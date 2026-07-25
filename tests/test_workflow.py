@@ -188,6 +188,44 @@ class WorkflowToolTests(unittest.TestCase):
         status = self.run_tool("status")
         self.assertIn("Stage: design", status.stdout)
 
+    def test_start_accepts_plain_request_and_prints_overview(self) -> None:
+        started = self.run_tool(
+            "start",
+            "--request",
+            "实现会员积分过期功能。需要产品、研发和测试评审。",
+        )
+        self.assertIn("Initialized REQ-", started.stdout)
+        self.assertIn("Overview:", started.stdout)
+        self.assertIn("Stage: intake (Intake)", started.stdout)
+        self.assertIn("Next action: Advance to PRD drafting.", started.stdout)
+
+        overview = self.run_tool("overview", "--json")
+        payload = json.loads(overview.stdout)
+        self.assertEqual("standard", payload["mode"])
+        self.assertEqual("intake", payload["stage"])
+        self.assertTrue(payload["can_advance"])
+        self.assertIn("original_request", payload["completed_artifacts"])
+
+    def test_overview_reports_missing_evidence_and_issues(self) -> None:
+        self.init()
+        self.run_tool("advance")
+        self.run_tool(
+            "add-issue",
+            "--source",
+            "testing",
+            "--owner",
+            "product",
+            "--severity",
+            "blocker",
+            "--summary",
+            "Expiration policy is undefined.",
+        )
+        overview = self.run_tool("overview")
+        self.assertIn("Stage: prd (PRD drafting)", overview.stdout)
+        self.assertIn("Can advance: no", overview.stdout)
+        self.assertIn("artifact:prd", overview.stdout)
+        self.assertIn("ISSUE-001 blocker open owner=product", overview.stdout)
+
     def test_blocker_prevents_gate_until_resolved(self) -> None:
         self.init()
         self.run_tool("advance")

@@ -11,8 +11,8 @@ Keep the main thread focused on business decisions, state transitions, and synth
 
 1. Locate the repository root.
 2. Resolve this Skill's own directory from the loaded `SKILL.md` path and run `python3 <skill-dir>/scripts/workflow.py --root <repository-root> status`. Never assume the Skill lives inside the target repository.
-3. If no workflow exists and the user explicitly requested the formal process, initialize it with `init --title ... --mode standard --request ...`. Add `--require-human-approval <gate>` for each configured human checkpoint.
-4. Run `next` before assigning work.
+3. If no workflow exists and the user explicitly requested the formal process, initialize it with `start --request ... --mode standard`. Add `--title ...` only when the user gives a better short title. Add `--require-human-approval <gate>` for each configured human checkpoint.
+4. Run `overview` before assigning work or when the user asks where the workflow stands.
 5. Do not initialize a formal workflow from an ordinary coding request.
 
 Require a human checkpoint for destructive data changes, permission changes, production release authorization, security exceptions, legal/compliance decisions, or another irreversible/high-impact action. Use `readiness_review` when authorization is needed before implementation and `acceptance` when authorization is needed before final delivery. Tell the user which checkpoints were configured.
@@ -58,7 +58,9 @@ Use a role-named subagent task and include the role boundary plus the explicit b
 Resolve `workflow.py` relative to this Skill and use `python3 <skill-dir>/scripts/workflow.py --root <repository-root> --help` for the complete interface. Common subcommands:
 
 ```text
+workflow.py start --request "..." --mode standard --require-human-approval acceptance
 workflow.py init --title "..." --mode standard --request "..." --require-human-approval acceptance
+workflow.py overview
 workflow.py status
 workflow.py next
 workflow.py record-artifact --name prd --path docs/requirements/.../01-prd.md
