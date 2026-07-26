@@ -1,6 +1,6 @@
 interface:
   display_name: "SDLC Engineering"
-  short_description: "Design and implement approved requirements"
-  default_prompt: "Use $sdlc-engineering for the assigned design or implementation phase."
+  short_description: "Design, preview, and implement approved requirements"
+  default_prompt: "Use $sdlc-engineering for the assigned design, prototype preview, or implementation phase."
 policy:
   allow_implicit_invocation: false

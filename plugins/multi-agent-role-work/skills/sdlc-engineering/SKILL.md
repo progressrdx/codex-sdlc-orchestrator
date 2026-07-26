@@ -2,8 +2,9 @@
 name: sdlc-engineering
 description: >-
   Perform the engineering assignment for an active formal SDLC workflow:
-  assess feasibility, create technical or database design, implement an
-  approved design, write unit tests, fix verified defects, and provide
+  assess feasibility, create technical or database design, build a prototype
+  or MVP preview before final implementation, implement an approved design,
+  write unit tests, fix verified defects, and provide
   implementation evidence. Use only when the SDLC coordinator explicitly
   assigns the developer role and names `$sdlc-engineering`; do not invoke
   implicitly for ordinary coding.
@@ -22,11 +23,14 @@ Read the approved PRD, active state, open issues, and relevant repository instru
 
 ## Implementation phase
 
-1. Implement only the approved scope.
-2. Follow the technical design or record a proposed deviation before proceeding.
-3. Add proportionate unit and integration tests.
-4. Run repository-prescribed checks and capture exact commands and results.
-5. Report changed files, requirement coverage, deviations, and residual risks.
+1. Before final implementation, create the smallest inspectable prototype, MVP, screenshot, or demo that lets the user judge whether the product direction is right.
+2. For prototype evidence, record what is included, what is intentionally excluded, and exactly how the user can inspect it.
+3. Implement final code only after user feedback explicitly approves the preview direction.
+4. Implement only the approved scope.
+5. Follow the technical design or record a proposed deviation before proceeding.
+6. Add proportionate unit and integration tests.
+7. Run repository-prescribed checks and capture exact commands and results.
+8. Report changed files, requirement coverage, deviations, and residual risks.
 
 ## Boundaries
 
@@ -34,3 +38,4 @@ Read the approved PRD, active state, open issues, and relevant repository instru
 - Do not approve your own work on behalf of testing.
 - Do not mark a command successful unless it actually ran successfully.
 - Do not refactor unrelated code.
+- Do not skip the user-preview stage for user-facing behavior unless the coordinator records why no meaningful preview is possible.

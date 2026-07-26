@@ -98,8 +98,9 @@ class WorkflowToolTests(unittest.TestCase):
         filename: str,
         status: str = "ready",
         notes: str | None = None,
+        text: str | None = None,
     ) -> None:
-        path = self.write_artifact(filename)
+        path = self.write_artifact(filename, text) if text is not None else self.write_artifact(filename)
         self.run_tool(
             "record-artifact",
             "--name",
@@ -110,6 +111,68 @@ class WorkflowToolTests(unittest.TestCase):
             status,
             *(["--notes", notes] if notes else []),
         )
+
+    def record_clarification(self) -> None:
+        self.record(
+            "clarification_questions",
+            "requirements/REQ-test-flow/00-clarification.md",
+            text=(
+                "# Clarification questions\n\n"
+                "## Questions\n\nWhich user roles, business rules, and edge cases need explicit handling?\n\n"
+                "## Missing details\n\nPermissions, empty states, failure behavior, and rollout expectations are missing.\n\n"
+                "## Assumptions and acceptance\n\nAssumption: the user will confirm scope before PRD or implementation. "
+                "Acceptance criteria must be observable before delivery.\n"
+            ),
+        )
+
+    def confirm_requirements(self) -> None:
+        self.record(
+            "requirement_confirmation",
+            "requirements/REQ-test-flow/00-requirement-confirmation.md",
+            text=(
+                "# User requirement confirmation\n\n"
+                "## User decision\n\nThe user confirmed and approved the clarified scope for this workflow.\n\n"
+                "## Confirmed scope\n\nProduct may proceed to PRD or design using the documented clarification.\n\n"
+                "## Open items\n\nNo unresolved business decision blocks the next stage.\n"
+            ),
+        )
+
+    def complete_discovery(self) -> None:
+        self.run_tool("advance")
+        self.record_clarification()
+        self.run_tool("advance")
+        self.confirm_requirements()
+        self.run_tool("advance")
+
+    def record_prototype(self) -> None:
+        self.record(
+            "prototype",
+            "requirements/REQ-test-flow/07-prototype.md",
+            text=(
+                "# Prototype preview\n\n"
+                "## Scope\n\nThe preview covers the approved workflow direction and the user-visible path.\n\n"
+                "## How to inspect\n\nOpen the local demo or inspect the screenshot evidence before final implementation.\n\n"
+                "## Notes\n\nThe prototype is intentionally small and exists to validate product direction.\n"
+            ),
+        )
+
+    def record_user_feedback(self) -> None:
+        self.record(
+            "user_feedback",
+            "requirements/REQ-test-flow/07-user-feedback.md",
+            text=(
+                "# User feedback\n\n"
+                "## User decision\n\nThe user reviewed the preview and approved the direction for implementation.\n\n"
+                "## Feedback summary\n\nNo product-direction changes are requested before implementation.\n\n"
+                "## Follow-up\n\nProceed with full implementation and verification.\n"
+            ),
+        )
+
+    def complete_preview(self) -> None:
+        self.record_prototype()
+        self.run_tool("advance")
+        self.record_user_feedback()
+        self.run_tool("advance")
 
     def record_gate_meeting(
         self,
@@ -175,7 +238,7 @@ class WorkflowToolTests(unittest.TestCase):
 
     def test_standard_flow_requires_artifacts_and_three_role_prd_gate(self) -> None:
         self.init()
-        self.run_tool("advance")
+        self.complete_discovery()
         blocked = self.run_tool("advance", expected=2)
         self.assertIn("artifact:prd", blocked.stderr)
 
@@ -197,7 +260,7 @@ class WorkflowToolTests(unittest.TestCase):
         self.assertIn("Initialized REQ-", started.stdout)
         self.assertIn("Overview:", started.stdout)
         self.assertIn("Stage: intake (Intake)", started.stdout)
-        self.assertIn("Next action: Advance to PRD drafting.", started.stdout)
+        self.assertIn("Next action: Advance to Requirement clarification.", started.stdout)
 
         overview = self.run_tool("overview", "--json")
         payload = json.loads(overview.stdout)
@@ -206,9 +269,52 @@ class WorkflowToolTests(unittest.TestCase):
         self.assertTrue(payload["can_advance"])
         self.assertIn("original_request", payload["completed_artifacts"])
 
-    def test_overview_reports_missing_evidence_and_issues(self) -> None:
+    def test_discovery_blocks_formal_work_until_user_confirms_requirements(self) -> None:
         self.init()
         self.run_tool("advance")
+        blocked = self.run_tool("advance", expected=2)
+        self.assertIn("artifact:clarification_questions", blocked.stderr)
+        weak = self.write_artifact(
+            "requirements/REQ-test-flow/weak-clarification.md",
+            "# Clarification\n\n## Questions\n\nOnly one question is listed.\n\n## Result\n\nInsufficient.\n",
+        )
+        rejected = self.run_tool(
+            "record-artifact",
+            "--name",
+            "clarification_questions",
+            "--path",
+            str(weak.relative_to(self.root)),
+            expected=2,
+        )
+        self.assertIn("missing: missing", rejected.stderr)
+
+        self.record_clarification()
+        self.run_tool("advance")
+        blocked = self.run_tool("advance", expected=2)
+        self.assertIn("artifact:requirement_confirmation", blocked.stderr)
+
+        unconfirmed = self.write_artifact(
+            "requirements/REQ-test-flow/unconfirmed.md",
+            "# Requirement summary\n\n## User decision\n\nThe user has not decided yet.\n\n"
+            "## Scope\n\nThe workflow cannot proceed.\n\n## Open items\n\nNeed confirmation.\n",
+        )
+        rejected = self.run_tool(
+            "record-artifact",
+            "--name",
+            "requirement_confirmation",
+            "--path",
+            str(unconfirmed.relative_to(self.root)),
+            expected=2,
+        )
+        self.assertIn("explicit user confirmation", rejected.stderr)
+
+        self.confirm_requirements()
+        self.run_tool("advance")
+        self.assertIn("Stage: prd", self.run_tool("status").stdout)
+
+    def test_overview_reports_missing_evidence_and_issues(self) -> None:
+        self.init()
+        self.complete_discovery()
         self.run_tool(
             "add-issue",
             "--source",
@@ -228,7 +334,7 @@ class WorkflowToolTests(unittest.TestCase):
 
     def test_blocker_prevents_gate_until_resolved(self) -> None:
         self.init()
-        self.run_tool("advance")
+        self.complete_discovery()
         self.record("prd", "requirements/REQ-test-flow/01-prd.md")
         self.run_tool("advance")
         self.approve("prd_review", ("product", "engineering", "testing"))
@@ -267,7 +373,7 @@ class WorkflowToolTests(unittest.TestCase):
 
     def test_gate_requires_current_cross_role_meeting_notes(self) -> None:
         self.init()
-        self.run_tool("advance")
+        self.complete_discovery()
         self.record("prd", "requirements/REQ-test-flow/01-prd.md")
         self.run_tool("advance")
         roles = ("product", "engineering", "testing")
@@ -279,7 +385,7 @@ class WorkflowToolTests(unittest.TestCase):
 
     def test_quick_mode_skips_prd_and_requires_two_readiness_roles(self) -> None:
         self.init("quick")
-        self.run_tool("advance")
+        self.complete_discovery()
         status = self.run_tool("status")
         self.assertIn("Stage: design", status.stdout)
         self.record("technical_design", "requirements/REQ-test-flow/03-design.md")
@@ -287,11 +393,47 @@ class WorkflowToolTests(unittest.TestCase):
         self.run_tool("advance")
         self.approve("readiness_review", ("engineering", "testing"))
         self.run_tool("advance")
+        self.assertIn("Stage: prototype", self.run_tool("status").stdout)
+        self.complete_preview()
+        self.assertIn("Stage: implementation", self.run_tool("status").stdout)
+
+    def test_user_feedback_blocks_final_implementation_until_preview_is_approved(self) -> None:
+        self.init("quick")
+        self.complete_discovery()
+        self.record("technical_design", "requirements/REQ-test-flow/03-design.md")
+        self.record("test_plan", "requirements/REQ-test-flow/05-test-plan.md")
+        self.run_tool("advance")
+        self.approve("readiness_review", ("engineering", "testing"))
+        self.run_tool("advance")
+        blocked = self.run_tool("advance", expected=2)
+        self.assertIn("artifact:prototype", blocked.stderr)
+
+        self.record_prototype()
+        self.run_tool("advance")
+        rejected_feedback = self.write_artifact(
+            "requirements/REQ-test-flow/rejected-feedback.md",
+            "# User feedback\n\n"
+            "## User decision\n\nThe user reviewed the preview and requested changes.\n\n"
+            "## Feedback summary\n\nThe direction does not match the intended workflow.\n\n"
+            "## Follow-up\n\nReopen product or design work before implementation.\n",
+        )
+        rejected = self.run_tool(
+            "record-artifact",
+            "--name",
+            "user_feedback",
+            "--path",
+            str(rejected_feedback.relative_to(self.root)),
+            expected=2,
+        )
+        self.assertIn("explicit user approval", rejected.stderr)
+
+        self.record_user_feedback()
+        self.run_tool("advance")
         self.assertIn("Stage: implementation", self.run_tool("status").stdout)
 
     def test_trivial_document_and_non_required_reviewer_are_rejected(self) -> None:
         self.init("quick")
-        self.run_tool("advance")
+        self.complete_discovery()
         placeholder = self.write_artifact("requirements/REQ-test-flow/placeholder.md", "# Placeholder\n")
         rejected = self.run_tool(
             "record-artifact",
@@ -373,7 +515,7 @@ class WorkflowToolTests(unittest.TestCase):
 
     def test_artifact_paths_and_review_content_cannot_be_reused(self) -> None:
         self.init("quick")
-        self.run_tool("advance")
+        self.complete_discovery()
         design = self.write_artifact("requirements/REQ-test-flow/shared.md")
         self.run_tool(
             "record-artifact",
@@ -432,7 +574,7 @@ class WorkflowToolTests(unittest.TestCase):
 
     def test_issue_resolution_cannot_reuse_gate_review(self) -> None:
         self.init("quick")
-        self.run_tool("advance")
+        self.complete_discovery()
         self.record("technical_design", "requirements/REQ-test-flow/03-design.md")
         self.record("test_plan", "requirements/REQ-test-flow/05-test-plan.md")
         self.run_tool("advance")
@@ -480,7 +622,7 @@ class WorkflowToolTests(unittest.TestCase):
 
     def test_strict_mode_requires_explicit_database_and_release_artifacts(self) -> None:
         self.init("strict")
-        self.run_tool("advance")
+        self.complete_discovery()
         self.record("prd", "requirements/REQ-test-flow/01-prd.md")
         self.run_tool("advance")
         self.approve("prd_review", ("product", "engineering", "testing"))
@@ -516,7 +658,7 @@ class WorkflowToolTests(unittest.TestCase):
 
     def test_reopen_invalidates_downstream_gate_decisions(self) -> None:
         self.init()
-        self.run_tool("advance")
+        self.complete_discovery()
         self.record("prd", "requirements/REQ-test-flow/01-prd.md")
         self.run_tool("advance")
         self.approve("prd_review", ("product", "engineering", "testing"))
@@ -531,12 +673,13 @@ class WorkflowToolTests(unittest.TestCase):
 
     def test_quick_flow_can_complete_and_clears_active_pointer(self) -> None:
         self.init("quick")
-        self.run_tool("advance")
+        self.complete_discovery()
         self.record("technical_design", "requirements/REQ-test-flow/03-design.md")
         self.record("test_plan", "requirements/REQ-test-flow/05-test-plan.md")
         self.run_tool("advance")
         self.approve("readiness_review", ("engineering", "testing"))
         self.run_tool("advance")
+        self.complete_preview()
         self.record("implementation", "requirements/REQ-test-flow/06-implementation.md")
         self.run_tool("advance")
         self.record("verification_report", "requirements/REQ-test-flow/08-verification.md")
@@ -550,7 +693,7 @@ class WorkflowToolTests(unittest.TestCase):
     def test_state_revision_increments_and_schema_is_validated(self) -> None:
         self.init("quick")
         initial = json.loads(self.run_tool("status", "--json").stdout)
-        self.assertEqual(2, initial["schema_version"])
+        self.assertEqual(3, initial["schema_version"])
         self.assertEqual(1, initial["revision"])
 
         self.run_tool("advance")
@@ -592,7 +735,7 @@ class WorkflowToolTests(unittest.TestCase):
 
     def test_configured_human_approval_blocks_gate_and_binds_evidence(self) -> None:
         self.init(human_gates=("prd_review",))
-        self.run_tool("advance")
+        self.complete_discovery()
         self.record("prd", "requirements/REQ-test-flow/01-prd.md")
         self.run_tool("advance")
         roles = ("product", "engineering", "testing")
@@ -621,7 +764,7 @@ class WorkflowToolTests(unittest.TestCase):
 
     def test_mutated_artifact_and_review_evidence_block_progress(self) -> None:
         self.init()
-        self.run_tool("advance")
+        self.complete_discovery()
         self.record("prd", "requirements/REQ-test-flow/01-prd.md")
         prd_path = self.root / "docs" / "requirements" / "REQ-test-flow" / "01-prd.md"
         prd_path.write_text(prd_path.read_text(encoding="utf-8") + "\nChanged after recording.\n", encoding="utf-8")
@@ -642,7 +785,7 @@ class WorkflowToolTests(unittest.TestCase):
 
     def test_changed_upstream_artifact_automatically_rewinds_workflow(self) -> None:
         self.init()
-        self.run_tool("advance")
+        self.complete_discovery()
         self.record("prd", "requirements/REQ-test-flow/01-prd.md")
         self.run_tool("advance")
         self.approve("prd_review", ("product", "engineering", "testing"))
@@ -661,12 +804,13 @@ class WorkflowToolTests(unittest.TestCase):
 
     def test_major_issue_requires_resolution_or_explicit_disposition_at_acceptance(self) -> None:
         self.init("quick")
-        self.run_tool("advance")
+        self.complete_discovery()
         self.record("technical_design", "requirements/REQ-test-flow/03-design.md")
         self.record("test_plan", "requirements/REQ-test-flow/05-test-plan.md")
         self.run_tool("advance")
         self.approve("readiness_review", ("engineering", "testing"))
         self.run_tool("advance")
+        self.complete_preview()
         self.record("implementation", "requirements/REQ-test-flow/06-implementation.md")
         self.run_tool("advance")
         self.record("verification_report", "requirements/REQ-test-flow/08-verification.md")

@@ -20,7 +20,7 @@ Open the project in Codex and say:
 启动标准研发流程：实现会员积分过期功能。
 ```
 
-The natural-language phrase is enough. The coordinator initializes the workflow with the friendly `start` entry, records your original request, and immediately reports the current stage and next action. `$sdlc-orchestrator` remains available when an explicit Skill invocation is preferred:
+The natural-language phrase is enough to open the workflow, but it is not treated as permission to build. The coordinator initializes the workflow with the friendly `start` entry, records your original request, and first moves into product-led clarification so missing details and ambiguous expectations are found before PRD, design, or code. `$sdlc-orchestrator` remains available when an explicit Skill invocation is preferred:
 
 ```text
 使用 $sdlc-orchestrator 启动标准研发流程：实现会员积分过期功能。
@@ -67,14 +67,16 @@ Meeting records preserve material product, engineering, and testing viewpoints, 
 The default `standard` flow is:
 
 ```text
-intake → prd → prd_review → design → readiness_review
+intake → clarification → requirement_confirmation
+       → prd → prd_review → design → readiness_review
+       → prototype → user_feedback
        → implementation → verification → acceptance → completed
 ```
 
-- `quick` skips the full PRD stage.
+- `quick` still requires clarification, user confirmation, prototype preview, and user feedback, but skips the full PRD stage.
 - `strict` additionally requires explicit database-design and release-plan artifacts; they may be marked not applicable with justification.
 
-PRD review, readiness review, and acceptance require independent role verdicts plus current meeting notes covering all required roles. Unresolved blockers prevent the workflow from advancing.
+PRD review, readiness review, and acceptance require independent role verdicts plus current meeting notes covering all required roles. Unresolved blockers prevent the workflow from advancing. User-facing work must be previewed before final implementation; if the user rejects the direction, the workflow reopens to the earliest affected stage.
 
 Workflow state uses:
 
@@ -84,6 +86,7 @@ Workflow state uses:
 - A repository-scoped cross-process writer lock.
 - Live evidence hashes: changing an indexed artifact, review, meeting note, or human-approval file blocks further gate advancement until refreshed.
 - Automatic rollback to the earliest affected stage when an upstream artifact changes.
+- Required user confirmation before PRD/design/coding and required user feedback after prototype/MVP preview.
 - Formal major-issue disposition: acceptance blocks on open major findings unless a named authority records an evidenced risk acceptance or scheduled deferral.
 
 These are local consistency controls, not identity authentication or tamper-proof audit guarantees. See [SECURITY.md](SECURITY.md) and [THREAT_MODEL.md](THREAT_MODEL.md).

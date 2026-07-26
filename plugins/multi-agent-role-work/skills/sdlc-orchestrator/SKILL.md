@@ -13,7 +13,8 @@ Keep the main thread focused on business decisions, state transitions, and synth
 2. Resolve this Skill's own directory from the loaded `SKILL.md` path and run `python3 <skill-dir>/scripts/workflow.py --root <repository-root> status`. Never assume the Skill lives inside the target repository.
 3. If no workflow exists and the user explicitly requested the formal process, initialize it with `start --request ... --mode standard`. Add `--title ...` only when the user gives a better short title. Add `--require-human-approval <gate>` for each configured human checkpoint.
 4. Run `overview` before assigning work or when the user asks where the workflow stands.
-5. Do not initialize a formal workflow from an ordinary coding request.
+5. Treat `start` as opening a requirement conversation, not permission to build. Do not draft PRD, design, or code before clarification and user confirmation pass.
+6. Do not initialize a formal workflow from an ordinary coding request.
 
 Require a human checkpoint for destructive data changes, permission changes, production release authorization, security exceptions, legal/compliance decisions, or another irreversible/high-impact action. Use `readiness_review` when authorization is needed before implementation and `acceptance` when authorization is needed before final delivery. Tell the user which checkpoints were configured.
 
@@ -24,10 +25,15 @@ Use [meeting-notes-template.md](assets/meeting-notes-template.md) for every cros
 
 | Stage | Assignment |
 |---|---|
-| `intake`, `prd` | Spawn a `product_manager` task with `$sdlc-product`. |
+| `intake` | Capture the raw request and advance to clarification if the formal workflow was explicit. |
+| `clarification` | Spawn a `product_manager` task with `$sdlc-product`; require missing-point analysis and focused user questions before recording `clarification_questions`. |
+| `requirement_confirmation` | Present the synthesized understanding and unresolved choices to the user; record `requirement_confirmation` only after explicit user confirmation. |
+| `prd` | Spawn a `product_manager` task with `$sdlc-product`. |
 | `prd_review` | Spawn `product_manager`, `developer`, and `tester` tasks independently with `$sdlc-review`; wait and synthesize disagreements. |
 | `design` | Spawn a `developer` task with `$sdlc-engineering` and a `tester` task with `$sdlc-testing`; parallelize only when their writes do not overlap. |
 | `readiness_review` | Spawn all three role tasks independently with `$sdlc-review`. |
+| `prototype` | Spawn a `developer` task with `$sdlc-engineering` to create the smallest inspectable prototype, MVP, screenshot, or demo. |
+| `user_feedback` | Present the prototype to the user; record `user_feedback` only after explicit approval. If the user rejects direction, reopen to `clarification`, `prd`, or `design` as appropriate. |
 | `implementation` | Spawn a `developer` task with `$sdlc-engineering`. |
 | `verification` | Spawn a `tester` task with `$sdlc-testing`; send confirmed defects to a `developer` task. |
 | `acceptance` | Spawn all three role tasks with `$sdlc-review`; product checks intent, tester checks evidence, developer answers technical findings. |
@@ -37,6 +43,10 @@ Use a role-named subagent task and include the role boundary plus the explicit b
 ## Enforce gates
 
 - Record artifacts only after checking that the referenced path exists.
+- Do not advance past `clarification` until the product role has identified missing details, ambiguity, assumptions, and acceptance-criteria gaps. The coordinator should ask only the high-impact questions needed to avoid wasted downstream work.
+- Do not advance past `requirement_confirmation` until the user explicitly confirms the synthesized requirement understanding.
+- Do not advance past `user_feedback` until the user has inspected a prototype, MVP, screenshot, demo, or equivalent preview and explicitly approves the direction.
+- If the user rejects the preview, preserve the feedback and reopen to the earliest affected stage instead of continuing toward final verification.
 - Convert every blocking finding into a tracked issue; resolve it only with owner-matched evidence.
 - At acceptance, an open `major` issue also blocks delivery. Resolve it, or record an evidenced `accepted_risk` or `deferred` disposition with the named human authority; deferred issues require a due date.
 - After every exchange involving two or more roles, create concise meeting notes that preserve each role's key position, disagreements, decisions, owners, and follow-up actions. Do not store a raw transcript.
@@ -63,7 +73,11 @@ workflow.py init --title "..." --mode standard --request "..." --require-human-a
 workflow.py overview
 workflow.py status
 workflow.py next
+workflow.py record-artifact --name clarification_questions --path docs/requirements/.../00-clarification.md
+workflow.py record-artifact --name requirement_confirmation --path docs/requirements/.../00-requirement-confirmation.md
 workflow.py record-artifact --name prd --path docs/requirements/.../01-prd.md
+workflow.py record-artifact --name prototype --path docs/requirements/.../07-prototype.md
+workflow.py record-artifact --name user_feedback --path docs/requirements/.../07-user-feedback.md
 workflow.py add-issue --source testing --severity blocker --summary "..."
 workflow.py resolve-issue --issue-id ISSUE-001 --resolved-by product --resolution "..." --evidence docs/requirements/.../01-prd.md
 workflow.py disposition-issue --issue-id ISSUE-002 --disposition accepted_risk --approved-by "release-owner" --rationale "..." --evidence docs/requirements/.../decisions/ISSUE-002.md

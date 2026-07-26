@@ -4,21 +4,27 @@
 
 The formal workflow starts only from an explicit user request. An active workflow continues when `.ai-workflow/active.yaml` exists and the user asks to continue or change that requirement. Ordinary questions and isolated edits stay outside the workflow.
 
-Use `start --request "..."` as the default initialization path for natural-language requests. It captures the original request, derives a usable title when none is supplied, and prints the same progress summary that `overview` returns later.
+Use `start --request "..."` as the default initialization path for natural-language requests. It captures the original request, derives a usable title when none is supplied, and prints the same progress summary that `overview` returns later. Starting a workflow opens clarification; it does not authorize PRD, design, or coding.
 
 ## Modes
 
-- `quick`: intake, lightweight design/test planning, implementation, verification, acceptance. Use for low-risk, localized work.
-- `standard`: PRD and three-role PRD review, design/test planning, readiness review, implementation, verification, acceptance.
+- `quick`: intake, clarification, user confirmation, lightweight design/test planning, readiness review, prototype or MVP preview, user feedback, implementation, verification, acceptance. Use for low-risk, localized work.
+- `standard`: intake, clarification, user confirmation, PRD and three-role PRD review, design/test planning, readiness review, prototype or MVP preview, user feedback, implementation, verification, acceptance.
 - `strict`: standard flow plus explicit database and release-plan artifacts, each allowed to be marked not applicable with justification.
 
 ## Artifacts
 
 All durable artifacts belong under `docs/requirements/<workflow-id>/`. The state file is the index, not a substitute for the artifacts.
 
+Clarification evidence must cover questions, missing details, assumptions, and acceptance-criteria gaps. Requirement confirmation and user feedback must record explicit user approval; inferred agreement is not enough. Prototype evidence must describe preview scope and how the user can inspect it.
+
 ## Decisions
 
 At each configured gate, every required role must submit an explicit verdict. A rejection is not averaged away. Resolve blockers, revise the artifact, reset stale approvals, and review again.
+
+Do not enter PRD, design, or coding from a vague one-sentence request. The product role must first identify what is missing or unclear, ask focused questions, synthesize the current understanding, and get explicit user confirmation.
+
+Do not wait until final acceptance to show user-facing work. After readiness review, build the smallest meaningful preview and ask for user feedback. If the user rejects the direction, preserve the feedback and reopen to clarification, PRD, or design instead of continuing to final implementation.
 
 An open `major` issue blocks acceptance. It must be resolved, or be explicitly dispositioned as `accepted_risk` or `deferred` by a named human authority with separate evidence. A deferred issue also records a due date. Minor issues remain visible but do not independently block a gate.
 

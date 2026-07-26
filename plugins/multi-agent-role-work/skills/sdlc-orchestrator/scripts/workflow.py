@@ -33,7 +33,7 @@ except ImportError:  # JSON is valid YAML 1.2 and is the dependency-free fallbac
     yaml = None
 
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 WORKFLOW_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{2,80}")
 ROLES = ("product", "engineering", "testing")
 GATES = ("prd_review", "readiness_review", "acceptance")
@@ -42,12 +42,16 @@ MEETING_PARTICIPANTS = ROLES + ("user", "coordinator")
 MEETING_OUTCOMES = ("approved", "rejected", "aligned", "actions_required", "escalated")
 ARTIFACTS = (
     "original_request",
+    "clarification_questions",
+    "requirement_confirmation",
     "prd",
     "review_log",
     "technical_design",
     "database_design",
     "test_plan",
     "test_cases",
+    "prototype",
+    "user_feedback",
     "implementation",
     "verification_report",
     "release_plan",
@@ -56,6 +60,8 @@ ARTIFACTS = (
 )
 ARTIFACT_STAGE = {
     "original_request": "intake",
+    "clarification_questions": "clarification",
+    "requirement_confirmation": "requirement_confirmation",
     "prd": "prd",
     "review_log": "prd_review",
     "technical_design": "design",
@@ -63,6 +69,8 @@ ARTIFACT_STAGE = {
     "test_plan": "design",
     "test_cases": "design",
     "release_plan": "design",
+    "prototype": "prototype",
+    "user_feedback": "user_feedback",
     "implementation": "implementation",
     "verification_report": "verification",
     "traceability": "verification",
@@ -70,24 +78,31 @@ ARTIFACT_STAGE = {
 }
 ARTIFACT_CHANGE_STAGE = {
     "original_request": "intake",
+    "clarification_questions": "clarification",
+    "requirement_confirmation": "requirement_confirmation",
     "prd": "prd",
     "technical_design": "design",
     "database_design": "design",
     "test_plan": "design",
     "test_cases": "design",
     "release_plan": "design",
+    "prototype": "prototype",
+    "user_feedback": "user_feedback",
     "implementation": "implementation",
     "verification_report": "verification",
     "traceability": "verification",
     "delivery_report": "acceptance",
 }
 ARTIFACT_INVALIDATES_GATES = {
+    "requirement_confirmation": GATES,
     "prd": GATES,
     "technical_design": ("readiness_review", "acceptance"),
     "database_design": ("readiness_review", "acceptance"),
     "test_plan": ("readiness_review", "acceptance"),
     "test_cases": ("readiness_review", "acceptance"),
     "release_plan": ("readiness_review", "acceptance"),
+    "prototype": ("acceptance",),
+    "user_feedback": ("acceptance",),
     "implementation": ("acceptance",),
     "verification_report": ("acceptance",),
     "traceability": ("acceptance",),
@@ -95,11 +110,15 @@ ARTIFACT_INVALIDATES_GATES = {
 }
 NOT_APPLICABLE_ALLOWED = {"database_design", "test_cases", "release_plan", "traceability"}
 DOCUMENT_ARTIFACTS = {
+    "clarification_questions",
+    "requirement_confirmation",
     "prd",
     "technical_design",
     "database_design",
     "test_plan",
     "test_cases",
+    "prototype",
+    "user_feedback",
     "verification_report",
     "release_plan",
     "delivery_report",
@@ -111,8 +130,12 @@ MIN_DOCUMENT_HEADINGS = 3
 FLOWS = {
     "quick": (
         "intake",
+        "clarification",
+        "requirement_confirmation",
         "design",
         "readiness_review",
+        "prototype",
+        "user_feedback",
         "implementation",
         "verification",
         "acceptance",
@@ -120,10 +143,14 @@ FLOWS = {
     ),
     "standard": (
         "intake",
+        "clarification",
+        "requirement_confirmation",
         "prd",
         "prd_review",
         "design",
         "readiness_review",
+        "prototype",
+        "user_feedback",
         "implementation",
         "verification",
         "acceptance",
@@ -131,10 +158,14 @@ FLOWS = {
     ),
     "strict": (
         "intake",
+        "clarification",
+        "requirement_confirmation",
         "prd",
         "prd_review",
         "design",
         "readiness_review",
+        "prototype",
+        "user_feedback",
         "implementation",
         "verification",
         "acceptance",
@@ -151,21 +182,29 @@ GATE_ROLES = {
 }
 STAGE_LABELS = {
     "intake": "Intake",
+    "clarification": "Requirement clarification",
+    "requirement_confirmation": "Requirement confirmation",
     "prd": "PRD drafting",
     "prd_review": "PRD review",
     "design": "Design and test planning",
     "readiness_review": "Readiness review",
+    "prototype": "Prototype or MVP preview",
+    "user_feedback": "User feedback",
     "implementation": "Implementation",
     "verification": "Verification",
     "acceptance": "Acceptance",
     "completed": "Completed",
 }
 STAGE_GUIDANCE = {
-    "intake": "Confirm scope and advance into the selected workflow.",
+    "intake": "Capture the raw request and advance to product-led clarification.",
+    "clarification": "Identify missing details, ambiguities, edge cases, constraints, and acceptance criteria before drafting PRD.",
+    "requirement_confirmation": "Ask the user to confirm the synthesized requirement understanding before formal design or development.",
     "prd": "Have product create or revise the PRD, then record the PRD artifact.",
     "prd_review": "Collect independent product, engineering, and testing verdicts, then record gate meeting notes.",
     "design": "Create technical design and test plan artifacts; strict mode may also need database and release plans.",
     "readiness_review": "Review whether implementation can start, record role verdicts, and preserve meeting notes.",
+    "prototype": "Create the smallest inspectable prototype, MVP, screenshot, or demo that lets the user judge direction.",
+    "user_feedback": "Collect explicit user feedback on the preview; if rejected, revise requirements or design before final implementation.",
     "implementation": "Implement the approved scope and record implementation evidence.",
     "verification": "Run verification, record the report, and triage any defects.",
     "acceptance": "Review delivery evidence, handle major findings, and record final acceptance.",
@@ -322,7 +361,7 @@ def load_state(root: Path, workflow_id: str | None = None) -> tuple[Path, dict[s
 
 def migrate_state(root: Path, state: dict[str, Any]) -> None:
     version = state.get("schema_version")
-    if version == 1:
+    if version in {1, 2}:
         state["schema_version"] = CURRENT_SCHEMA_VERSION
         state.setdefault("revision", 0)
         state.setdefault("human_approval_policy", {"required_gates": []})
@@ -442,8 +481,12 @@ def required_artifacts(state: dict[str, Any], stage: str) -> tuple[str, ...]:
     mode = state["workflow"]["mode"]
     required = {
         "intake": ("original_request",),
+        "clarification": ("clarification_questions",),
+        "requirement_confirmation": ("requirement_confirmation",),
         "prd": ("prd",),
         "design": ("technical_design", "test_plan"),
+        "prototype": ("prototype",),
+        "user_feedback": ("user_feedback",),
         "implementation": ("implementation",),
         "verification": ("verification_report",),
         "acceptance": ("delivery_report",),
@@ -780,6 +823,36 @@ def contains_marker(text: str, marker: str) -> bool:
     return any(variant.lower() in text.lower() for variant in variants)
 
 
+def require_artifact_content(name: str, path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    if name == "clarification_questions":
+        for marker in ("question", "missing", "assumption", "acceptance"):
+            if not contains_marker(text, marker):
+                raise WorkflowError(
+                    f"Clarification evidence must cover questions, missing details, "
+                    f"assumptions, and acceptance criteria; missing: {marker}"
+                )
+    elif name == "requirement_confirmation":
+        if not (
+            contains_marker(text, "user")
+            and (contains_marker(text, "confirmed") or contains_marker(text, "approve"))
+        ):
+            raise WorkflowError(
+                "Requirement confirmation evidence must record explicit user confirmation."
+            )
+    elif name == "prototype":
+        for marker in ("preview", "scope", "how to inspect"):
+            if not contains_marker(text, marker):
+                raise WorkflowError(f"Prototype evidence must identify: {marker}")
+    elif name == "user_feedback":
+        if not (
+            contains_marker(text, "user")
+            and contains_marker(text, "feedback")
+            and (contains_marker(text, "approve") or contains_marker(text, "approved"))
+        ):
+            raise WorkflowError("User feedback evidence must record explicit user approval.")
+
+
 def cmd_init(args: argparse.Namespace) -> None:
     root = repository_root(args.root)
     pointer = active_pointer(root)
@@ -927,6 +1000,7 @@ def cmd_record_artifact(args: argparse.Namespace) -> None:
     absolute, relative = repository_evidence_path(root, args.path, minimum_chars=minimum)
     if args.name in DOCUMENT_ARTIFACTS and args.status == "ready":
         require_markdown_structure(absolute)
+        require_artifact_content(args.name, absolute)
     for other_name, other in state.get("artifacts", {}).items():
         if other_name != args.name and other.get("path") == str(relative) and other.get("status") != "superseded":
             raise WorkflowError(f"Artifact path is already used by {other_name}: {relative}")
