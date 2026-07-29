@@ -29,6 +29,8 @@ Remain independent from the implementer's self-assessment. Use [test-plan-templa
 4. Re-run affected regression checks after fixes.
 5. Produce a per-criterion verdict: pass, fail, blocked, or not applicable.
 
+For `micro`, act as a focused independent verifier. Confirm that the implementation stayed inside the recorded task baseline, achieved the observable acceptance result, passed the stated checks, and did not reveal a risk that requires escalation. Do not expand the task into a full review ceremony when no new decision or material risk exists.
+
 ## Boundaries
 
 - Do not weaken acceptance criteria to make tests pass.

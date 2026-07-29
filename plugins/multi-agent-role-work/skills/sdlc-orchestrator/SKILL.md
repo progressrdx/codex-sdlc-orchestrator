@@ -11,10 +11,14 @@ Keep the main thread focused on business decisions, state transitions, and synth
 
 1. Locate the repository root.
 2. Resolve this Skill's own directory from the loaded `SKILL.md` path and run `python3 <skill-dir>/scripts/workflow.py --root <repository-root> status`. Never assume the Skill lives inside the target repository.
-3. If no workflow exists and the user explicitly requested the formal process, initialize it with `start --request ... --mode standard`. Add `--title ...` only when the user gives a better short title. Add `--require-human-approval <gate>` for each configured human checkpoint.
+3. If no workflow exists and the user explicitly requested the formal process, initialize it with `start --request ... --mode auto` unless the user explicitly chose a mode. Add `--title ...` only when the user gives a better short title. Add `--require-human-approval <gate>` for each configured human checkpoint.
 4. Run `overview` before assigning work or when the user asks where the workflow stands.
-5. Treat `start` as opening a requirement conversation, not permission to build. Do not draft PRD, design, or code before clarification and user confirmation pass.
+5. Treat `start` as opening scope and risk analysis, not permission to build. Advance from intake to `scope_check`, read [scope-risk-template.md](assets/scope-risk-template.md), and inspect the request and repository before asking questions or selecting a mode.
 6. Do not initialize a formal workflow from an ordinary coding request.
+
+At `scope_check`, always analyze every `assess-risk --checked-area` category: actors/permissions, goals/scope, business rules/states, data/API effects, failures/edges, compatibility/rollout, subjective choices, and acceptance/verification. This thinking is mandatory; user questions are conditional. If no unresolved high-impact gap exists, record that conclusion and avoid ceremonial questions. Record the result with `assess-risk`, present the recommendation and reasons, and never select a mode below the deterministic safe minimum. An explicitly requested mode is a floor.
+
+If engineering or testing discovers a risk inconsistent with the selected mode, stop before expanding scope, explain the evidence and proposed higher mode, then `reopen --stage scope_check --reason ...` and run `assess-risk` again with the new flags. Do not silently escalate effort or silently continue under a weaker flow.
 
 Require a human checkpoint for destructive data changes, permission changes, production release authorization, security exceptions, legal/compliance decisions, or another irreversible/high-impact action. Use `readiness_review` when authorization is needed before implementation and `acceptance` when authorization is needed before final delivery. Tell the user which checkpoints were configured.
 
@@ -25,7 +29,8 @@ Use [meeting-notes-template.md](assets/meeting-notes-template.md) for every cros
 
 | Stage | Assignment |
 |---|---|
-| `intake` | Capture the raw request and advance to clarification if the formal workflow was explicit. |
+| `intake` | Capture the raw request and advance to `scope_check` if the formal workflow was explicit. |
+| `scope_check` | Perform structured requirement-gap and risk analysis, recommend/select the mode, and configure conditional quick gates with `assess-risk`. |
 | `clarification` | Spawn a `product_manager` task with `$sdlc-product`; require missing-point analysis and focused user questions before recording `clarification_questions`. |
 | `requirement_confirmation` | Present the synthesized understanding and unresolved choices to the user; record `requirement_confirmation` only after explicit user confirmation. |
 | `prd` | Spawn a `product_manager` task with `$sdlc-product`. |
@@ -33,19 +38,22 @@ Use [meeting-notes-template.md](assets/meeting-notes-template.md) for every cros
 | `design` | Spawn a `developer` task with `$sdlc-engineering` and a `tester` task with `$sdlc-testing`; parallelize only when their writes do not overlap. |
 | `readiness_review` | Spawn all three role tasks independently with `$sdlc-review`. |
 | `prototype` | Spawn a `developer` task with `$sdlc-engineering` to create the smallest inspectable prototype, MVP, screenshot, or demo. |
-| `user_feedback` | Present the prototype to the user; record `user_feedback` only after explicit approval. If the user rejects direction, reopen to `clarification`, `prd`, or `design` as appropriate. |
+| `user_feedback` | Present the prototype to the user; use `record-user-feedback`. Approval unlocks implementation; `request_changes` or `reject` preserves the feedback and rewinds to the selected affected stage. |
 | `implementation` | Spawn a `developer` task with `$sdlc-engineering`. |
 | `verification` | Spawn a `tester` task with `$sdlc-testing`; send confirmed defects to a `developer` task. |
 | `acceptance` | Spawn all three role tasks with `$sdlc-review`; product checks intent, tester checks evidence, developer answers technical findings. |
 
 Use a role-named subagent task and include the role boundary plus the explicit bundled `$sdlc-*` Skill in its prompt. Project custom agents may be used when available, but the workflow must never depend on them. Never omit the Skill and rely on the task name alone.
 
+Only route stages present in the state's `flow_stages`. In `micro`, assign implementation to engineering and verification to an independent tester; do not invent product work, prototype work, role gates, or meetings that the selected flow omits.
+
 ## Enforce gates
 
 - Record artifacts only after checking that the referenced path exists.
+- Do not advance past `scope_check` without a current structured risk assessment and task baseline. Never treat a short request as proof that no gaps or risks exist.
 - Do not advance past `clarification` until the product role has identified missing details, ambiguity, assumptions, and acceptance-criteria gaps. The coordinator should ask only the high-impact questions needed to avoid wasted downstream work.
 - Do not advance past `requirement_confirmation` until the user explicitly confirms the synthesized requirement understanding.
-- Do not advance past `user_feedback` until the user has inspected a prototype, MVP, screenshot, demo, or equivalent preview and explicitly approves the direction.
+- When `user_feedback` is enabled, do not advance until the user has inspected a prototype, MVP, screenshot, demo, or equivalent preview and explicitly approves the direction through `record-user-feedback --verdict approve`.
 - If the user rejects the preview, preserve the feedback and reopen to the earliest affected stage instead of continuing toward final verification.
 - Convert every blocking finding into a tracked issue; resolve it only with owner-matched evidence.
 - At acceptance, an open `major` issue also blocks delivery. Resolve it, or record an evidenced `accepted_risk` or `deferred` disposition with the named human authority; deferred issues require a due date.
@@ -69,15 +77,18 @@ Resolve `workflow.py` relative to this Skill and use `python3 <skill-dir>/script
 
 ```text
 workflow.py start --request "..." --mode standard --require-human-approval acceptance
+workflow.py start --request "..." --mode auto
 workflow.py init --title "..." --mode standard --request "..." --require-human-approval acceptance
 workflow.py overview
 workflow.py status
 workflow.py next
+workflow.py assess-risk --help
 workflow.py record-artifact --name clarification_questions --path docs/requirements/.../00-clarification.md
 workflow.py record-artifact --name requirement_confirmation --path docs/requirements/.../00-requirement-confirmation.md
 workflow.py record-artifact --name prd --path docs/requirements/.../01-prd.md
 workflow.py record-artifact --name prototype --path docs/requirements/.../07-prototype.md
-workflow.py record-artifact --name user_feedback --path docs/requirements/.../07-user-feedback.md
+workflow.py record-user-feedback --verdict approve --summary "..." --evidence docs/requirements/.../07-user-feedback.md
+workflow.py record-user-feedback --verdict request_changes --affected-stage design --summary "..." --evidence docs/requirements/.../07-user-feedback.md
 workflow.py add-issue --source testing --severity blocker --summary "..."
 workflow.py resolve-issue --issue-id ISSUE-001 --resolved-by product --resolution "..." --evidence docs/requirements/.../01-prd.md
 workflow.py disposition-issue --issue-id ISSUE-002 --disposition accepted_risk --approved-by "release-owner" --rationale "..." --evidence docs/requirements/.../decisions/ISSUE-002.md

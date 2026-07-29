@@ -33,7 +33,7 @@ except ImportError:  # JSON is valid YAML 1.2 and is the dependency-free fallbac
     yaml = None
 
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 WORKFLOW_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{2,80}")
 ROLES = ("product", "engineering", "testing")
 GATES = ("prd_review", "readiness_review", "acceptance")
@@ -42,6 +42,7 @@ MEETING_PARTICIPANTS = ROLES + ("user", "coordinator")
 MEETING_OUTCOMES = ("approved", "rejected", "aligned", "actions_required", "escalated")
 ARTIFACTS = (
     "original_request",
+    "risk_assessment",
     "clarification_questions",
     "requirement_confirmation",
     "prd",
@@ -60,6 +61,7 @@ ARTIFACTS = (
 )
 ARTIFACT_STAGE = {
     "original_request": "intake",
+    "risk_assessment": "scope_check",
     "clarification_questions": "clarification",
     "requirement_confirmation": "requirement_confirmation",
     "prd": "prd",
@@ -78,6 +80,7 @@ ARTIFACT_STAGE = {
 }
 ARTIFACT_CHANGE_STAGE = {
     "original_request": "intake",
+    "risk_assessment": "scope_check",
     "clarification_questions": "clarification",
     "requirement_confirmation": "requirement_confirmation",
     "prd": "prd",
@@ -110,6 +113,7 @@ ARTIFACT_INVALIDATES_GATES = {
 }
 NOT_APPLICABLE_ALLOWED = {"database_design", "test_cases", "release_plan", "traceability"}
 DOCUMENT_ARTIFACTS = {
+    "risk_assessment",
     "clarification_questions",
     "requirement_confirmation",
     "prd",
@@ -128,8 +132,20 @@ DOCUMENT_ARTIFACTS = {
 MIN_DOCUMENT_CHARS = 80
 MIN_DOCUMENT_HEADINGS = 3
 FLOWS = {
+    "auto": (
+        "intake",
+        "scope_check",
+    ),
+    "micro": (
+        "intake",
+        "scope_check",
+        "implementation",
+        "verification",
+        "completed",
+    ),
     "quick": (
         "intake",
+        "scope_check",
         "clarification",
         "requirement_confirmation",
         "design",
@@ -143,6 +159,7 @@ FLOWS = {
     ),
     "standard": (
         "intake",
+        "scope_check",
         "clarification",
         "requirement_confirmation",
         "prd",
@@ -158,6 +175,7 @@ FLOWS = {
     ),
     "strict": (
         "intake",
+        "scope_check",
         "clarification",
         "requirement_confirmation",
         "prd",
@@ -172,7 +190,14 @@ FLOWS = {
         "completed",
     ),
 }
+LEGACY_V3_FLOWS = {
+    mode: tuple(stage for stage in stages if stage != "scope_check")
+    for mode, stages in FLOWS.items()
+    if mode in {"quick", "standard", "strict"}
+}
 GATE_ROLES = {
+    "auto": {},
+    "micro": {},
     "quick": {
         "readiness_review": ("engineering", "testing"),
         "acceptance": ("product", "engineering", "testing"),
@@ -182,6 +207,7 @@ GATE_ROLES = {
 }
 STAGE_LABELS = {
     "intake": "Intake",
+    "scope_check": "Scope and risk check",
     "clarification": "Requirement clarification",
     "requirement_confirmation": "Requirement confirmation",
     "prd": "PRD drafting",
@@ -196,7 +222,8 @@ STAGE_LABELS = {
     "completed": "Completed",
 }
 STAGE_GUIDANCE = {
-    "intake": "Capture the raw request and advance to product-led clarification.",
+    "intake": "Capture the raw request and advance to a scope and risk check.",
+    "scope_check": "Analyze requirement gaps and risks, recommend the lowest safe workflow mode, and record the task baseline.",
     "clarification": "Identify missing details, ambiguities, edge cases, constraints, and acceptance criteria before drafting PRD.",
     "requirement_confirmation": "Ask the user to confirm the synthesized requirement understanding before formal design or development.",
     "prd": "Have product create or revise the PRD, then record the PRD artifact.",
@@ -211,6 +238,46 @@ STAGE_GUIDANCE = {
     "completed": "No next workflow action is required.",
 }
 
+MODE_RANK = {"micro": 0, "quick": 1, "standard": 2, "strict": 3}
+RISK_FLAGS = (
+    "user_visible",
+    "subjective_judgment",
+    "weak_verification",
+    "external_dependency",
+    "api_change",
+    "data_schema",
+    "cross_module",
+    "business_ambiguity",
+    "security_privacy",
+    "irreversible",
+    "data_migration",
+    "production_release",
+)
+REQUIREMENT_AREAS = (
+    "actors_permissions",
+    "goals_scope",
+    "business_rules_states",
+    "data_api",
+    "failures_edges",
+    "compatibility_rollout",
+    "subjective_choices",
+    "acceptance_verification",
+)
+RISK_MINIMUM_MODE = {
+    "user_visible": "quick",
+    "subjective_judgment": "quick",
+    "weak_verification": "quick",
+    "external_dependency": "quick",
+    "api_change": "standard",
+    "data_schema": "standard",
+    "cross_module": "standard",
+    "business_ambiguity": "standard",
+    "security_privacy": "strict",
+    "irreversible": "strict",
+    "data_migration": "strict",
+    "production_release": "strict",
+}
+
 
 class WorkflowError(RuntimeError):
     pass
@@ -218,6 +285,38 @@ class WorkflowError(RuntimeError):
 
 def now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def workflow_stages(state: dict[str, Any]) -> tuple[str, ...]:
+    configured = state.get("workflow", {}).get("flow_stages")
+    if isinstance(configured, list) and configured:
+        return tuple(str(stage) for stage in configured)
+    return FLOWS[state["workflow"]["mode"]]
+
+
+def recommended_mode_for(flags: list[str]) -> str:
+    minimum = "micro"
+    for flag in flags:
+        candidate = RISK_MINIMUM_MODE[flag]
+        if MODE_RANK[candidate] > MODE_RANK[minimum]:
+            minimum = candidate
+    return minimum
+
+
+def flow_for(mode: str, gate_policy: dict[str, bool] | None = None) -> tuple[str, ...]:
+    if mode != "quick":
+        return FLOWS[mode]
+    policy = gate_policy or {}
+    stages = ["intake", "scope_check"]
+    if policy.get("clarification"):
+        stages.append("clarification")
+    if policy.get("requirement_confirmation"):
+        stages.append("requirement_confirmation")
+    stages.extend(("design", "readiness_review"))
+    if policy.get("preview"):
+        stages.extend(("prototype", "user_feedback"))
+    stages.extend(("implementation", "verification", "acceptance", "completed"))
+    return tuple(stages)
 
 
 def repository_root(explicit: str | None = None) -> Path:
@@ -361,11 +460,18 @@ def load_state(root: Path, workflow_id: str | None = None) -> tuple[Path, dict[s
 
 def migrate_state(root: Path, state: dict[str, Any]) -> None:
     version = state.get("schema_version")
-    if version in {1, 2}:
+    if version in {1, 2, 3}:
         state["schema_version"] = CURRENT_SCHEMA_VERSION
         state.setdefault("revision", 0)
         state.setdefault("human_approval_policy", {"required_gates": []})
         state.setdefault("human_approvals", {})
+        workflow = state.setdefault("workflow", {})
+        legacy_mode = workflow.get("mode")
+        if legacy_mode in LEGACY_V3_FLOWS:
+            workflow.setdefault("requested_mode", legacy_mode)
+            workflow.setdefault("flow_stages", list(LEGACY_V3_FLOWS[legacy_mode]))
+        state.setdefault("risk_assessment", {"status": "legacy_not_required"})
+        state.setdefault("user_feedback_records", [])
     for collection in ("artifacts", "human_approvals"):
         for item in state.get(collection, {}).values():
             if item.get("status") == "not_applicable" or item.get("evidence_sha256"):
@@ -413,7 +519,18 @@ def validate_state(state: dict[str, Any], path: Path) -> None:
     stage = workflow.get("current_stage")
     if mode not in FLOWS:
         raise WorkflowError(f"Invalid workflow mode in {path}: {mode!r}")
-    if stage not in FLOWS[mode]:
+    configured_stages = workflow.get("flow_stages")
+    if not isinstance(configured_stages, list) or not configured_stages:
+        raise WorkflowError(f"Invalid workflow flow_stages in {path}")
+    allowed_stages = set(STAGE_LABELS)
+    if (
+        configured_stages[0] != "intake"
+        or len(configured_stages) != len(set(configured_stages))
+        or any(item not in allowed_stages for item in configured_stages)
+        or (mode != "auto" and configured_stages[-1] != "completed")
+    ):
+        raise WorkflowError(f"Invalid workflow flow_stages in {path}: {configured_stages!r}")
+    if stage not in configured_stages:
         raise WorkflowError(f"Invalid workflow stage in {path}: {stage!r}")
     if workflow.get("status") not in {"active", "completed"}:
         raise WorkflowError(f"Invalid workflow status in {path}: {workflow.get('status')!r}")
@@ -423,7 +540,7 @@ def validate_state(state: dict[str, Any], path: Path) -> None:
     for name in ("artifacts", "decisions", "human_approvals"):
         if not isinstance(state.get(name), dict):
             raise WorkflowError(f"Invalid {name} mapping in {path}")
-    for name in ("issues", "meetings", "history"):
+    for name in ("issues", "meetings", "history", "user_feedback_records"):
         if not isinstance(state.get(name), list):
             raise WorkflowError(f"Invalid {name} list in {path}")
 
@@ -481,6 +598,7 @@ def required_artifacts(state: dict[str, Any], stage: str) -> tuple[str, ...]:
     mode = state["workflow"]["mode"]
     required = {
         "intake": ("original_request",),
+        "scope_check": ("risk_assessment",),
         "clarification": ("clarification_questions",),
         "requirement_confirmation": ("requirement_confirmation",),
         "prd": ("prd",),
@@ -587,7 +705,7 @@ def rewind_workflow(
     """Return a workflow to an affected stage and supersede downstream evidence."""
     preserve_artifacts = preserve_artifacts or set()
     mode = state["workflow"]["mode"]
-    stages = FLOWS[mode]
+    stages = workflow_stages(state)
     if stage not in stages or stage == "completed":
         raise WorkflowError(f"Stage {stage} is not valid for {mode} mode.")
     old_stage = state["workflow"]["current_stage"]
@@ -644,6 +762,16 @@ def stage_requirements(root: Path, state: dict[str, Any]) -> tuple[list[str], li
         if not artifact_ready(root, state, name):
             missing.append(f"artifact:{name}")
 
+    if stage == "scope_check":
+        assessment = state.get("risk_assessment", {})
+        artifact = state.get("artifacts", {}).get("risk_assessment", {})
+        if not (
+            assessment.get("status") == "current"
+            and assessment.get("selected_mode") == state["workflow"]["mode"]
+            and assessment.get("evidence_sha256") == artifact.get("evidence_sha256")
+        ):
+            missing.append("risk_assessment:mode_selection")
+
     if stage in GATES:
         decisions = state.get("decisions", {}).get(stage, {})
         for role in required_gate_roles(state, stage):
@@ -686,7 +814,7 @@ def next_stage_name(state: dict[str, Any]) -> str | None:
     stage = workflow["current_stage"]
     if stage == "completed":
         return None
-    stages = FLOWS[workflow["mode"]]
+    stages = workflow_stages(state)
     index = stages.index(stage)
     if index + 1 >= len(stages):
         return None
@@ -729,6 +857,8 @@ def overview_payload(root: Path, state: dict[str, Any]) -> dict[str, Any]:
         "meeting_notes": len(state.get("meetings", [])),
         "state_revision": state["revision"],
         "human_approval_gates": state.get("human_approval_policy", {}).get("required_gates", []),
+        "risk_recommendation": state.get("risk_assessment", {}).get("recommended_mode"),
+        "enabled_stages": list(workflow_stages(state)),
     }
 
 
@@ -758,6 +888,9 @@ def print_overview(payload: dict[str, Any]) -> None:
     else:
         print("Open or carried issues: none")
     print(f"Meeting notes: {payload['meeting_notes']}")
+    if payload["risk_recommendation"]:
+        print(f"Risk-recommended mode: {payload['risk_recommendation']}")
+    print("Enabled stages: " + " -> ".join(payload["enabled_stages"]))
     gates = payload["human_approval_gates"]
     print("Human approval gates: " + (",".join(gates) if gates else "none"))
 
@@ -881,6 +1014,8 @@ def cmd_init(args: argparse.Namespace) -> None:
             "id": workflow_id,
             "title": args.title,
             "mode": args.mode,
+            "requested_mode": args.mode,
+            "flow_stages": list(FLOWS[args.mode]),
             "status": "active",
             "current_stage": FLOWS[args.mode][0],
             "created_at": timestamp,
@@ -902,6 +1037,8 @@ def cmd_init(args: argparse.Namespace) -> None:
         },
         "human_approvals": {},
         "meetings": [],
+        "risk_assessment": {"status": "pending"},
+        "user_feedback_records": [],
         "history": [
             {"at": timestamp, "event": "initialized", "detail": f"Started {args.mode} workflow"}
         ],
@@ -931,6 +1068,136 @@ def cmd_start(args: argparse.Namespace) -> None:
     print()
     print("Overview:")
     print_overview(overview_payload(root, state))
+
+
+def gate_choice(value: str, default: bool) -> bool:
+    if value == "auto":
+        return default
+    return value == "yes"
+
+
+def markdown_bullets(items: list[str], empty: str) -> str:
+    values = [item.strip() for item in items if item.strip()]
+    if not values:
+        return f"- {empty}"
+    return "\n".join(f"- {item}" for item in values)
+
+
+def cmd_assess_risk(args: argparse.Namespace) -> None:
+    root = repository_root(args.root)
+    path, state = load_state(root, args.id)
+    workflow = state["workflow"]
+    if workflow["current_stage"] != "scope_check":
+        raise WorkflowError("Risk assessment can only be recorded during scope_check.")
+
+    flags = list(dict.fromkeys(args.risk or []))
+    checked_areas = list(dict.fromkeys(args.checked_area or []))
+    gaps = list(dict.fromkeys(args.gap or []))
+    reasons = list(dict.fromkeys(args.reason or []))
+    missing_areas = [area for area in REQUIREMENT_AREAS if area not in checked_areas]
+    if missing_areas:
+        raise WorkflowError(
+            "Requirement-gap analysis is incomplete; unchecked areas: "
+            + ",".join(missing_areas)
+        )
+    recommended = recommended_mode_for(flags)
+    if gaps and recommended == "micro":
+        recommended = "quick"
+
+    selected = args.selected_mode
+    requested = workflow.get("requested_mode", workflow.get("mode", "auto"))
+    floor = recommended
+    if requested in MODE_RANK and MODE_RANK[requested] > MODE_RANK[floor]:
+        floor = str(requested)
+    if MODE_RANK[selected] < MODE_RANK[floor]:
+        raise WorkflowError(
+            f"Selected mode {selected} is below the safe minimum {floor}; "
+            f"risks recommend {recommended} and the requested mode was {requested}."
+        )
+
+    clarification = gate_choice(args.needs_clarification, bool(gaps))
+    confirmation = gate_choice(args.needs_confirmation, clarification)
+    preview = gate_choice(
+        args.needs_preview,
+        any(flag in {"user_visible", "subjective_judgment"} for flag in flags),
+    )
+    if clarification and not confirmation:
+        raise WorkflowError("Requirement confirmation is required when clarification changes scope.")
+    if selected == "micro" and (clarification or confirmation or preview):
+        raise WorkflowError("Micro mode cannot carry clarification, confirmation, or preview gates.")
+    if selected in {"standard", "strict"}:
+        clarification = confirmation = preview = True
+    policy = {
+        "clarification": clarification,
+        "requirement_confirmation": confirmation,
+        "preview": preview,
+    }
+    stages = flow_for(selected, policy)
+    configured_human = state.get("human_approval_policy", {}).get("required_gates", [])
+    unavailable = [gate for gate in configured_human if gate not in stages]
+    if unavailable:
+        raise WorkflowError(
+            "Selected flow omits configured human approval gates: " + ",".join(unavailable)
+        )
+
+    docs_dir = root / "docs" / "requirements" / workflow["id"]
+    assessment_path = docs_dir / "00-scope-and-risk.md"
+    rendered = (
+        f"# Scope and risk assessment: {workflow['title']}\n\n"
+        "## Task baseline\n\n"
+        f"Scope: {args.scope.strip()}\n\n"
+        f"Out of scope: {args.out_of_scope.strip()}\n\n"
+        f"Acceptance: {args.acceptance.strip()}\n\n"
+        f"Verification: {args.verification.strip()}\n\n"
+        "## Requirement gaps and uncertainties\n\n"
+        f"Checked areas:\n{markdown_bullets(checked_areas, 'none')}\n\n"
+        f"{markdown_bullets(gaps, 'No unresolved high-impact gap was found after the structured check.')}\n\n"
+        "## Risk triage\n\n"
+        f"{markdown_bullets(flags, 'No listed risk flag applies.')}\n\n"
+        "## Mode decision\n\n"
+        f"Requested mode: {requested}\n\n"
+        f"Recommended mode: {recommended}\n\n"
+        f"Selected mode: {selected}\n\n"
+        f"Reasons:\n{markdown_bullets(reasons, 'The selected mode matches the assessed scope and risk.')}\n\n"
+        "## Conditional gates\n\n"
+        f"Clarification: {'required' if clarification else 'not required'}\n\n"
+        f"Requirement confirmation: {'required' if confirmation else 'not required'}\n\n"
+        f"User preview and feedback: {'required' if preview else 'not required'}\n"
+    )
+    atomic_write_text(assessment_path, rendered)
+    relative = assessment_path.relative_to(root)
+    evidence_hash = content_sha256(assessment_path)
+    state.setdefault("artifacts", {})["risk_assessment"] = {
+        "path": str(relative),
+        "status": "ready",
+        "evidence_sha256": evidence_hash,
+        "updated_at": now(),
+        "notes": "Generated from structured scope and risk triage.",
+    }
+    state["risk_assessment"] = {
+        "status": "current",
+        "flags": flags,
+        "checked_areas": checked_areas,
+        "gaps": gaps,
+        "recommended_mode": recommended,
+        "selected_mode": selected,
+        "gate_policy": policy,
+        "reasons": reasons,
+        "evidence": str(relative),
+        "evidence_sha256": evidence_hash,
+        "at": now(),
+    }
+    old_mode = workflow["mode"]
+    workflow["mode"] = selected
+    workflow["flow_stages"] = list(stages)
+    add_history(state, "risk_assessed", f"recommended={recommended}:selected={selected}")
+    if old_mode != selected:
+        add_history(state, "mode_selected", f"{old_mode}->{selected}")
+    save_state(path, state)
+    print(f"Risk assessment recorded: {relative}")
+    print(f"Recommended mode: {recommended}")
+    print(f"Selected mode: {selected}")
+    print("Enabled conditional gates: " + ",".join(name for name, enabled in policy.items() if enabled) if any(policy.values()) else "Enabled conditional gates: none")
 
 
 def cmd_status(args: argparse.Namespace) -> None:
@@ -982,7 +1249,7 @@ def cmd_next(args: argparse.Namespace) -> None:
         for item in missing:
             print(f"- {item}")
     else:
-        stages = FLOWS[workflow["mode"]]
+        stages = workflow_stages(state)
         next_stage = stages[stages.index(stage) + 1]
         print(f"Ready to advance to: {next_stage}")
     for item in notes:
@@ -1024,7 +1291,7 @@ def cmd_record_artifact(args: argparse.Namespace) -> None:
     automatic_rewind = ""
     if changed and args.name in ARTIFACT_CHANGE_STAGE:
         affected_stage = ARTIFACT_CHANGE_STAGE[args.name]
-        stages = FLOWS[state["workflow"]["mode"]]
+        stages = workflow_stages(state)
         if stages.index(state["workflow"]["current_stage"]) >= stages.index(affected_stage):
             old_stage, invalidated_artifacts, invalidated_meetings = rewind_workflow(
                 state,
@@ -1065,6 +1332,85 @@ def next_issue_id(state: dict[str, Any]) -> str:
         if match:
             numbers.append(int(match.group(1)))
     return f"ISSUE-{max(numbers, default=0) + 1:03d}"
+
+
+def next_feedback_id(state: dict[str, Any]) -> str:
+    numbers = []
+    for feedback in state.get("user_feedback_records", []):
+        match = re.fullmatch(r"UFB-(\d+)", str(feedback.get("id", "")))
+        if match:
+            numbers.append(int(match.group(1)))
+    return f"UFB-{max(numbers, default=0) + 1:03d}"
+
+
+def cmd_record_user_feedback(args: argparse.Namespace) -> None:
+    root = repository_root(args.root)
+    path, state = load_state(root, args.id)
+    workflow = state["workflow"]
+    if workflow["current_stage"] != "user_feedback":
+        raise WorkflowError("User feedback can only be recorded during user_feedback.")
+    evidence_path, relative = repository_evidence_path(
+        root, args.evidence, minimum_chars=MIN_DOCUMENT_CHARS
+    )
+    require_markdown_structure(evidence_path)
+    evidence_hash = content_sha256(evidence_path)
+    for other_name, other in state.get("artifacts", {}).items():
+        if other_name != "user_feedback" and other.get("path") == str(relative):
+            raise WorkflowError(f"User feedback evidence is already used by {other_name}.")
+
+    feedback_id = next_feedback_id(state)
+    record = {
+        "id": feedback_id,
+        "verdict": args.verdict,
+        "summary": args.summary.strip(),
+        "affected_stage": args.affected_stage,
+        "evidence": str(relative),
+        "evidence_sha256": evidence_hash,
+        "at": now(),
+    }
+    state.setdefault("user_feedback_records", []).append(record)
+
+    if args.verdict == "approve":
+        if args.affected_stage:
+            raise WorkflowError("Approved feedback must not specify --affected-stage.")
+        state.setdefault("artifacts", {})["user_feedback"] = {
+            "path": str(relative),
+            "status": "ready",
+            "evidence_sha256": evidence_hash,
+            "updated_at": now(),
+            "notes": f"Explicit user approval recorded as {feedback_id}.",
+        }
+        add_history(state, "user_feedback_approved", feedback_id)
+        save_state(path, state)
+        print(f"Recorded {feedback_id}: user approved the preview direction")
+        return
+
+    if not args.affected_stage:
+        raise WorkflowError("Change-request or rejection feedback requires --affected-stage.")
+    stages = workflow_stages(state)
+    if args.affected_stage not in stages:
+        raise WorkflowError(f"Affected stage is not enabled in this flow: {args.affected_stage}")
+    if stages.index(args.affected_stage) >= stages.index("user_feedback"):
+        raise WorkflowError("Affected stage must be earlier than user_feedback.")
+    old_stage, invalidated_artifacts, invalidated_meetings = rewind_workflow(
+        state,
+        args.affected_stage,
+        f"User feedback {feedback_id}: {args.verdict}",
+    )
+    add_history(
+        state,
+        "user_feedback_changes_requested",
+        f"{feedback_id}:{old_stage}->{args.affected_stage}:{args.verdict}",
+    )
+    if invalidated_artifacts:
+        add_history(state, "artifacts_invalidated", ",".join(invalidated_artifacts))
+    if invalidated_meetings:
+        add_history(state, "meetings_invalidated", ",".join(invalidated_meetings))
+    save_state(path, state)
+    print(
+        f"Recorded {feedback_id}: {args.verdict}; "
+        f"workflow rewound to {args.affected_stage}"
+    )
 
 
 def next_meeting_id(state: dict[str, Any]) -> str:
@@ -1377,7 +1723,7 @@ def cmd_advance(args: argparse.Namespace) -> None:
         if notes:
             detail += "; " + "; ".join(notes)
         raise WorkflowError(f"Gate blocked: {detail}")
-    stages = FLOWS[workflow["mode"]]
+    stages = workflow_stages(state)
     new_stage = stages[stages.index(stage) + 1]
     workflow["current_stage"] = new_stage
     if new_stage == "completed":
@@ -1450,7 +1796,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     start.add_argument("--request", required=True)
     start.add_argument("--title", help="Optional short title; defaults to the first request sentence")
-    start.add_argument("--mode", choices=tuple(FLOWS), default="standard")
+    start.add_argument("--mode", choices=tuple(FLOWS), default="auto")
     start.add_argument(
         "--require-human-approval",
         action="append",
@@ -1471,12 +1817,51 @@ def build_parser() -> argparse.ArgumentParser:
     next_cmd = subparsers.add_parser("next", help="Show the next required evidence or transition")
     next_cmd.set_defaults(func=cmd_next)
 
+    risk = subparsers.add_parser(
+        "assess-risk",
+        help="Record structured requirement gaps, recommend a mode, and configure conditional gates",
+    )
+    risk.add_argument("--selected-mode", choices=tuple(MODE_RANK), required=True)
+    risk.add_argument(
+        "--checked-area",
+        action="append",
+        choices=REQUIREMENT_AREAS,
+        help="Requirement category that was explicitly checked; all categories are required",
+    )
+    risk.add_argument("--risk", action="append", choices=RISK_FLAGS)
+    risk.add_argument("--gap", action="append", help="Unresolved requirement gap; repeat as needed")
+    risk.add_argument("--reason", action="append", help="Mode-selection reason; repeat as needed")
+    risk.add_argument("--scope", required=True)
+    risk.add_argument("--out-of-scope", required=True)
+    risk.add_argument("--acceptance", required=True)
+    risk.add_argument("--verification", required=True)
+    risk.add_argument(
+        "--needs-clarification", choices=("auto", "yes", "no"), default="auto"
+    )
+    risk.add_argument(
+        "--needs-confirmation", choices=("auto", "yes", "no"), default="auto"
+    )
+    risk.add_argument("--needs-preview", choices=("auto", "yes", "no"), default="auto")
+    risk.set_defaults(func=cmd_assess_risk)
+
     artifact = subparsers.add_parser("record-artifact", help="Record an existing repository artifact")
     artifact.add_argument("--name", choices=ARTIFACTS, required=True)
     artifact.add_argument("--path", required=True)
     artifact.add_argument("--status", choices=("ready", "not_applicable", "superseded"), default="ready")
     artifact.add_argument("--notes")
     artifact.set_defaults(func=cmd_record_artifact)
+
+    feedback = subparsers.add_parser(
+        "record-user-feedback",
+        help="Record an explicit user preview verdict and rewind on requested changes",
+    )
+    feedback.add_argument(
+        "--verdict", choices=("approve", "request_changes", "reject"), required=True
+    )
+    feedback.add_argument("--summary", required=True)
+    feedback.add_argument("--evidence", required=True)
+    feedback.add_argument("--affected-stage", choices=tuple(STAGE_LABELS))
+    feedback.set_defaults(func=cmd_record_user_feedback)
 
     issue = subparsers.add_parser("add-issue", help="Add a tracked review issue")
     issue.add_argument("--source", choices=("product", "engineering", "testing", "user", "coordinator"), required=True)
@@ -1553,7 +1938,9 @@ def main() -> int:
         mutating = {
             "init",
             "start",
+            "assess-risk",
             "record-artifact",
+            "record-user-feedback",
             "add-issue",
             "resolve-issue",
             "disposition-issue",

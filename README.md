@@ -20,7 +20,7 @@ Open the project in Codex and say:
 启动标准研发流程：实现会员积分过期功能。
 ```
 
-The natural-language phrase is enough to open the workflow, but it is not treated as permission to build. The coordinator initializes the workflow with the friendly `start` entry, records your original request, and first moves into product-led clarification so missing details and ambiguous expectations are found before PRD, design, or code. `$sdlc-orchestrator` remains available when an explicit Skill invocation is preferred:
+The natural-language phrase is enough to open the workflow, but it is not treated as permission to build. The coordinator records the original request, performs a structured requirement-gap and risk check, and recommends the lowest safe workflow mode before PRD, design, or code. It always checks for missing details; it asks the user only when an unresolved choice can materially change the result. `$sdlc-orchestrator` remains available when an explicit Skill invocation is preferred:
 
 ```text
 使用 $sdlc-orchestrator 启动标准研发流程：实现会员积分过期功能。
@@ -67,16 +67,19 @@ Meeting records preserve material product, engineering, and testing viewpoints, 
 The default `standard` flow is:
 
 ```text
-intake → clarification → requirement_confirmation
+intake → scope_check → clarification → requirement_confirmation
        → prd → prd_review → design → readiness_review
        → prototype → user_feedback
        → implementation → verification → acceptance → completed
 ```
 
-- `quick` still requires clarification, user confirmation, prototype preview, and user feedback, but skips the full PRD stage.
+- `micro` is the tracked path for explicit, localized, low-risk work: `intake → scope_check → implementation → verification → completed`.
+- `quick` skips the full PRD stage. Clarification, requirement confirmation, prototype preview, and user feedback are enabled only when scope, ambiguity, or user-visible judgment requires them.
 - `strict` additionally requires explicit database-design and release-plan artifacts; they may be marked not applicable with justification.
 
-PRD review, readiness review, and acceptance require independent role verdicts plus current meeting notes covering all required roles. Unresolved blockers prevent the workflow from advancing. User-facing work must be previewed before final implementation; if the user rejects the direction, the workflow reopens to the earliest affected stage.
+Natural-language starts use temporary `auto` mode. During `scope_check`, the coordinator must explicitly check actors/permissions, goals/scope, business rules/states, data/API effects, failures/edges, compatibility/rollout, subjective choices, and acceptance/verification. It records scope, exclusions, unresolved gaps, and risk flags, then recommends `micro`, `quick`, `standard`, or `strict`. API/data changes, cross-module behavior, security/privacy, migrations, production actions, and irreversible work raise the minimum mode. An explicitly requested mode is never silently downgraded.
+
+Enabled PRD review, readiness review, and acceptance gates require independent role verdicts plus current meeting notes covering all required roles. Unresolved blockers prevent the workflow from advancing. When preview is enabled, explicit user approval is required before implementation. A user `request_changes` or `reject` verdict is preserved and automatically rewinds the workflow to the affected stage.
 
 Workflow state uses:
 
@@ -86,7 +89,9 @@ Workflow state uses:
 - A repository-scoped cross-process writer lock.
 - Live evidence hashes: changing an indexed artifact, review, meeting note, or human-approval file blocks further gate advancement until refreshed.
 - Automatic rollback to the earliest affected stage when an upstream artifact changes.
-- Required user confirmation before PRD/design/coding and required user feedback after prototype/MVP preview.
+- Required user confirmation and preview feedback whenever those gates are enabled by the selected flow.
+- Risk-based `micro`, `quick`, `standard`, and `strict` selection, with conditional clarification and preview gates for quick work.
+- First-class user feedback decisions: approve, request changes, or reject.
 - Formal major-issue disposition: acceptance blocks on open major findings unless a named authority records an evidenced risk acceptance or scheduled deferral.
 
 These are local consistency controls, not identity authentication or tamper-proof audit guarantees. See [SECURITY.md](SECURITY.md) and [THREAT_MODEL.md](THREAT_MODEL.md).

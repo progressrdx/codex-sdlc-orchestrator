@@ -4,27 +4,33 @@
 
 The formal workflow starts only from an explicit user request. An active workflow continues when `.ai-workflow/active.yaml` exists and the user asks to continue or change that requirement. Ordinary questions and isolated edits stay outside the workflow.
 
-Use `start --request "..."` as the default initialization path for natural-language requests. It captures the original request, derives a usable title when none is supplied, and prints the same progress summary that `overview` returns later. Starting a workflow opens clarification; it does not authorize PRD, design, or coding.
+Use `start --request "..." --mode auto` as the default initialization path for natural-language requests. It captures the original request, derives a usable title when none is supplied, and prints the same progress summary that `overview` returns later. Starting a workflow opens scope and risk analysis; it does not authorize PRD, design, or coding.
 
 ## Modes
 
-- `quick`: intake, clarification, user confirmation, lightweight design/test planning, readiness review, prototype or MVP preview, user feedback, implementation, verification, acceptance. Use for low-risk, localized work.
-- `standard`: intake, clarification, user confirmation, PRD and three-role PRD review, design/test planning, readiness review, prototype or MVP preview, user feedback, implementation, verification, acceptance.
+- `auto`: temporary start mode. The coordinator must complete `scope_check`, record risk triage, and select a concrete mode before continuing.
+- `micro`: intake, scope/risk check, implementation, independent verification, completion. Use only for explicit, localized, low-risk work with reliable verification.
+- `quick`: intake, scope/risk check, lightweight design/test planning, readiness review, implementation, verification, and acceptance. Clarification, requirement confirmation, prototype, and user feedback are enabled only when the risk assessment requires them.
+- `standard`: intake, scope/risk check, clarification, user confirmation, PRD and three-role PRD review, design/test planning, readiness review, prototype or MVP preview, user feedback, implementation, verification, acceptance.
 - `strict`: standard flow plus explicit database and release-plan artifacts, each allowed to be marked not applicable with justification.
+
+The risk assessment recommends the lowest safe mode from explicit flags. A user-requested mode is a floor, and the selected mode must never be below the deterministic recommendation. Always perform the gap analysis; skip user questions only when no unresolved high-impact choice exists.
+
+Modes may escalate `micro → quick → standard → strict` when new evidence appears. Present the evidence and increased workflow cost, reopen at `scope_check`, and record a new assessment. Do not silently broaden the work. Downgrades require a new assessment showing why the earlier risk no longer applies.
 
 ## Artifacts
 
 All durable artifacts belong under `docs/requirements/<workflow-id>/`. The state file is the index, not a substitute for the artifacts.
 
-Clarification evidence must cover questions, missing details, assumptions, and acceptance-criteria gaps. Requirement confirmation and user feedback must record explicit user approval; inferred agreement is not enough. Prototype evidence must describe preview scope and how the user can inspect it.
+The scope/risk artifact records in-scope and out-of-scope boundaries, observable acceptance, verification, checked gaps, risk flags, mode recommendation, selected mode, and conditional gates. Clarification evidence must cover questions, missing details, assumptions, and acceptance-criteria gaps. Requirement confirmation and approved user feedback must record explicit user approval; inferred agreement is not enough. Prototype evidence must describe preview scope and how the user can inspect it.
 
 ## Decisions
 
 At each configured gate, every required role must submit an explicit verdict. A rejection is not averaged away. Resolve blockers, revise the artifact, reset stale approvals, and review again.
 
-Do not enter PRD, design, or coding from a vague one-sentence request. The product role must first identify what is missing or unclear, ask focused questions, synthesize the current understanding, and get explicit user confirmation.
+Do not enter PRD, design, or coding from an unanalyzed one-sentence request. `scope_check` must first inspect actors, rules, boundaries, data/API effects, permissions, states, failures, compatibility, subjective choices, acceptance, and verification. Ask focused questions and require confirmation when material uncertainty exists; do not manufacture questions for a decisive low-risk task.
 
-Do not wait until final acceptance to show user-facing work. After readiness review, build the smallest meaningful preview and ask for user feedback. If the user rejects the direction, preserve the feedback and reopen to clarification, PRD, or design instead of continuing to final implementation.
+When preview is enabled, do not wait until final acceptance to show user-facing work. After readiness review, build the smallest meaningful preview and ask for user feedback. Record `approve`, `request_changes`, or `reject` explicitly. A change request or rejection preserves its evidence and rewinds to the affected scope, clarification, PRD, design, or prototype stage instead of continuing to final implementation.
 
 An open `major` issue blocks acceptance. It must be resolved, or be explicitly dispositioned as `accepted_risk` or `deferred` by a named human authority with separate evidence. A deferred issue also records a due date. Minor issues remain visible but do not independently block a gate.
 

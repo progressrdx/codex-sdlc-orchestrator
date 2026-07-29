@@ -7,6 +7,8 @@ description: Review a formal SDLC gate from an explicitly assigned product, engi
 
 Read [gate-criteria.md](references/gate-criteria.md), the active state, all gate inputs, and unresolved issues. Use [review-record-template.md](assets/review-record-template.md) for the result.
 
+Review only gates present in the state's enabled `flow_stages`. Do not create missing ceremonies for `micro` or conditionally skipped quick stages. If evidence reveals a risk inconsistent with the selected mode, reject the transition and recommend returning to `scope_check` with the specific escalation reason.
+
 ## Review rules
 
 1. Review only from the assigned role perspective.

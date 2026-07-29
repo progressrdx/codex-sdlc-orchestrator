@@ -10,7 +10,7 @@ This repository contains a Codex-native, multi-role SDLC workflow.
 - Keep coordination lightweight. Role Skills have implicit invocation disabled; the coordinator must name them explicitly in delegated prompts.
 - Spawn independent `product_manager`, `developer`, and `tester` role tasks at the stages defined by `$sdlc-orchestrator`, with the corresponding explicit bundled Skill and role boundary in each prompt. Project custom agents are optional and the published plugin must not depend on them.
 - After any communication involving two or more roles, preserve a concise structured meeting record with material viewpoints, disagreements, decisions and rationale, action owners, open questions, and next step. Do not preserve a raw transcript.
-- Never code before the configured readiness gate passes.
+- Never code before the configured pre-implementation checks pass: the readiness gate when present, or the recorded scope/risk check for `micro`.
 - Do not treat an artifact, reviewer silence, or developer self-test as approval.
 
 ## Verification

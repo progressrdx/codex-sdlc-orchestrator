@@ -1,6 +1,6 @@
 {
   "name": "multi-agent-role-work",
-  "version": "1.1.0+codex.20260726032137",
+  "version": "1.1.0+codex.20260729120812",
   "description": "A reliable multi-role SDLC workflow for Codex with review gates, human checkpoints, atomic state, and meeting records.",
   "author": {
     "name": "progressrdx",
@@ -18,8 +18,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Multi-Role SDLC",
-    "shortDescription": "Product, engineering, and testing workflow with review gates.",
-    "longDescription": "Run a formal software delivery workflow in any project without copying project files. The orchestrator starts with product-led clarification and explicit user confirmation, then coordinates independent product, engineering, and testing reviews, a user-visible prototype/MVP feedback point, versioned atomic state, optional human authorization checkpoints, and structured meeting records only when explicitly requested.",
+    "shortDescription": "Risk-adaptive product, engineering, and testing workflow.",
+    "longDescription": "Run a formal software delivery workflow in any project without copying project files. The orchestrator first performs structured requirement-gap and risk triage, selects the lowest safe micro, quick, standard, or strict flow, conditionally asks for clarification and preview feedback, coordinates independent product, engineering, and testing work, and preserves versioned atomic state, optional human authorization checkpoints, and structured meeting records.",
     "developerName": "progressrdx",
     "category": "Productivity",
     "capabilities": [
@@ -28,7 +28,7 @@
       "Human review gates"
     ],
     "defaultPrompt": [
-      "\u542f\u52a8\u6807\u51c6\u7814\u53d1\u6d41\u7a0b\uff1a\u63cf\u8ff0\u4f60\u7684\u9700\u6c42\uff0c\u6211\u4f1a\u5148\u6f84\u6e05\u5e76\u786e\u8ba4\u8303\u56f4\u3002",
+      "\u542f\u52a8\u7814\u53d1\u6d41\u7a0b\uff1a\u63cf\u8ff0\u4f60\u7684\u9700\u6c42\uff0c\u6211\u4f1a\u5148\u68c0\u67e5\u9700\u6c42\u7f3a\u53e3\u548c\u98ce\u9669\uff0c\u518d\u63a8\u8350\u5408\u9002\u6d41\u7a0b\u3002",
       "\u7ee7\u7eed\u5f53\u524d\u6b63\u5f0f\u7814\u53d1\u6d41\u7a0b\u3002",
       "\u67e5\u770b\u5f53\u524d\u7814\u53d1\u6d41\u7a0b\u72b6\u6001\u548c\u963b\u585e\u9879\u3002"
     ]

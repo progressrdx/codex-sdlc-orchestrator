@@ -61,6 +61,7 @@ class WorkflowToolTests(unittest.TestCase):
         mode: str = "standard",
         human_gates: tuple[str, ...] = (),
     ) -> None:
+        self.workflow_mode = mode
         self.run_tool(
             "init",
             "--id",
@@ -76,6 +77,60 @@ class WorkflowToolTests(unittest.TestCase):
                 for gate in human_gates
                 for item in ("--require-human-approval", gate)
             ),
+        )
+
+    def assess_risk(
+        self,
+        selected_mode: str | None = None,
+        *,
+        risks: tuple[str, ...] | None = None,
+        gaps: tuple[str, ...] | None = None,
+        clarification: str | None = None,
+        confirmation: str | None = None,
+        preview: str | None = None,
+    ) -> None:
+        mode = selected_mode or self.workflow_mode
+        default_risks = {
+            "micro": (),
+            "quick": ("user_visible",),
+            "standard": ("cross_module",),
+            "strict": ("data_migration",),
+        }
+        full_flow = mode in {"standard", "strict"}
+        self.run_tool(
+            "assess-risk",
+            "--selected-mode",
+            mode,
+            *(
+                item
+                for area in (
+                    "actors_permissions",
+                    "goals_scope",
+                    "business_rules_states",
+                    "data_api",
+                    "failures_edges",
+                    "compatibility_rollout",
+                    "subjective_choices",
+                    "acceptance_verification",
+                )
+                for item in ("--checked-area", area)
+            ),
+            "--scope",
+            "Deliver the explicitly bounded workflow behavior.",
+            "--out-of-scope",
+            "No unrelated platform or deployment changes.",
+            "--acceptance",
+            "The requested behavior is observable and satisfies the recorded criteria.",
+            "--verification",
+            "Run focused automated checks and independent behavior verification.",
+            *(item for flag in (risks if risks is not None else default_risks[mode]) for item in ("--risk", flag)),
+            *(item for gap in (gaps or ()) for item in ("--gap", gap)),
+            "--needs-clarification",
+            clarification or ("yes" if full_flow or mode == "quick" else "no"),
+            "--needs-confirmation",
+            confirmation or ("yes" if full_flow or mode == "quick" else "no"),
+            "--needs-preview",
+            preview or ("yes" if full_flow or mode == "quick" else "no"),
         )
 
     def write_artifact(
@@ -139,6 +194,8 @@ class WorkflowToolTests(unittest.TestCase):
 
     def complete_discovery(self) -> None:
         self.run_tool("advance")
+        self.assess_risk()
+        self.run_tool("advance")
         self.record_clarification()
         self.run_tool("advance")
         self.confirm_requirements()
@@ -157,15 +214,23 @@ class WorkflowToolTests(unittest.TestCase):
         )
 
     def record_user_feedback(self) -> None:
-        self.record(
-            "user_feedback",
+        evidence = self.write_artifact(
             "requirements/REQ-test-flow/07-user-feedback.md",
-            text=(
+            (
                 "# User feedback\n\n"
                 "## User decision\n\nThe user reviewed the preview and approved the direction for implementation.\n\n"
                 "## Feedback summary\n\nNo product-direction changes are requested before implementation.\n\n"
                 "## Follow-up\n\nProceed with full implementation and verification.\n"
             ),
+        )
+        self.run_tool(
+            "record-user-feedback",
+            "--verdict",
+            "approve",
+            "--summary",
+            "The user approved the preview direction.",
+            "--evidence",
+            str(evidence.relative_to(self.root)),
         )
 
     def complete_preview(self) -> None:
@@ -260,17 +325,21 @@ class WorkflowToolTests(unittest.TestCase):
         self.assertIn("Initialized REQ-", started.stdout)
         self.assertIn("Overview:", started.stdout)
         self.assertIn("Stage: intake (Intake)", started.stdout)
-        self.assertIn("Next action: Advance to Requirement clarification.", started.stdout)
+        self.assertIn("Next action: Advance to Scope and risk check.", started.stdout)
 
         overview = self.run_tool("overview", "--json")
         payload = json.loads(overview.stdout)
-        self.assertEqual("standard", payload["mode"])
+        self.assertEqual("auto", payload["mode"])
         self.assertEqual("intake", payload["stage"])
         self.assertTrue(payload["can_advance"])
         self.assertIn("original_request", payload["completed_artifacts"])
 
     def test_discovery_blocks_formal_work_until_user_confirms_requirements(self) -> None:
         self.init()
+        self.run_tool("advance")
+        blocked = self.run_tool("advance", expected=2)
+        self.assertIn("artifact:risk_assessment", blocked.stderr)
+        self.assess_risk()
         self.run_tool("advance")
         blocked = self.run_tool("advance", expected=2)
         self.assertIn("artifact:clarification_questions", blocked.stderr)
@@ -430,6 +499,192 @@ class WorkflowToolTests(unittest.TestCase):
         self.record_user_feedback()
         self.run_tool("advance")
         self.assertIn("Stage: implementation", self.run_tool("status").stdout)
+
+    def test_auto_triage_selects_micro_for_clear_low_risk_work(self) -> None:
+        self.run_tool(
+            "start",
+            "--id",
+            "REQ-test-flow",
+            "--request",
+            "Replace one confirmed button label without changing behavior.",
+        )
+        self.run_tool("advance")
+        self.run_tool(
+            "assess-risk",
+            "--selected-mode",
+            "micro",
+            *(
+                item
+                for area in (
+                    "actors_permissions",
+                    "goals_scope",
+                    "business_rules_states",
+                    "data_api",
+                    "failures_edges",
+                    "compatibility_rollout",
+                    "subjective_choices",
+                    "acceptance_verification",
+                )
+                for item in ("--checked-area", area)
+            ),
+            "--scope",
+            "Replace the one identified button label.",
+            "--out-of-scope",
+            "No API, data, layout, or behavior changes.",
+            "--acceptance",
+            "The new label renders in the existing button.",
+            "--verification",
+            "Run the focused UI test and inspect the rendered label.",
+            "--needs-clarification",
+            "no",
+            "--needs-confirmation",
+            "no",
+            "--needs-preview",
+            "no",
+        )
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual("micro", state["workflow"]["mode"])
+        self.assertEqual(
+            ["intake", "scope_check", "implementation", "verification", "completed"],
+            state["workflow"]["flow_stages"],
+        )
+        self.run_tool("advance")
+        self.record("implementation", "requirements/REQ-test-flow/implementation.md")
+        self.run_tool("advance")
+        self.record("verification_report", "requirements/REQ-test-flow/verification.md")
+        completed = self.run_tool("advance")
+        self.assertIn("verification -> completed", completed.stdout)
+
+    def test_quick_triage_can_skip_unneeded_questions_and_preview(self) -> None:
+        self.init("quick")
+        self.run_tool("advance")
+        self.assess_risk(
+            "quick",
+            risks=("external_dependency",),
+            clarification="no",
+            confirmation="no",
+            preview="no",
+        )
+        self.run_tool("advance")
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual("design", state["workflow"]["current_stage"])
+        self.assertNotIn("clarification", state["workflow"]["flow_stages"])
+        self.assertNotIn("requirement_confirmation", state["workflow"]["flow_stages"])
+        self.assertNotIn("prototype", state["workflow"]["flow_stages"])
+        self.assertNotIn("user_feedback", state["workflow"]["flow_stages"])
+
+    def test_risk_triage_rejects_mode_below_safe_minimum(self) -> None:
+        self.init("auto")
+        self.run_tool("advance")
+        rejected = self.run_tool(
+            "assess-risk",
+            "--selected-mode",
+            "quick",
+            *(
+                item
+                for area in (
+                    "actors_permissions",
+                    "goals_scope",
+                    "business_rules_states",
+                    "data_api",
+                    "failures_edges",
+                    "compatibility_rollout",
+                    "subjective_choices",
+                    "acceptance_verification",
+                )
+                for item in ("--checked-area", area)
+            ),
+            "--risk",
+            "api_change",
+            "--scope",
+            "Change an API response field.",
+            "--out-of-scope",
+            "No database migration.",
+            "--acceptance",
+            "All callers handle the new response contract.",
+            "--verification",
+            "Run contract and compatibility tests.",
+            expected=2,
+        )
+        self.assertIn("below the safe minimum standard", rejected.stderr)
+
+    def test_risk_triage_requires_every_requirement_area_to_be_checked(self) -> None:
+        self.init("auto")
+        self.run_tool("advance")
+        rejected = self.run_tool(
+            "assess-risk",
+            "--selected-mode",
+            "micro",
+            "--checked-area",
+            "goals_scope",
+            "--scope",
+            "Change one confirmed label.",
+            "--out-of-scope",
+            "No behavior changes.",
+            "--acceptance",
+            "The label renders.",
+            "--verification",
+            "Inspect the label.",
+            expected=2,
+        )
+        self.assertIn("Requirement-gap analysis is incomplete", rejected.stderr)
+        self.assertIn("actors_permissions", rejected.stderr)
+
+    def test_new_risk_can_reopen_scope_check_and_escalate_mode(self) -> None:
+        self.init("micro")
+        self.run_tool("advance")
+        self.assess_risk("micro")
+        self.run_tool("advance")
+        self.run_tool(
+            "reopen",
+            "--stage",
+            "scope_check",
+            "--reason",
+            "Implementation discovery revealed an API contract change.",
+        )
+        self.assess_risk(
+            "standard",
+            risks=("api_change",),
+            gaps=("Existing callers need a compatibility decision.",),
+        )
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual("standard", state["workflow"]["mode"])
+        self.assertIn("prd_review", state["workflow"]["flow_stages"])
+        self.run_tool("advance")
+        self.assertIn("Stage: clarification", self.run_tool("status").stdout)
+
+    def test_change_request_feedback_is_preserved_and_rewinds_design(self) -> None:
+        self.init("quick")
+        self.complete_discovery()
+        self.record("technical_design", "requirements/REQ-test-flow/03-design.md")
+        self.record("test_plan", "requirements/REQ-test-flow/05-test-plan.md")
+        self.run_tool("advance")
+        self.approve("readiness_review", ("engineering", "testing"))
+        self.run_tool("advance")
+        self.record_prototype()
+        self.run_tool("advance")
+        evidence = self.write_artifact(
+            "requirements/REQ-test-flow/07-user-change-request.md",
+            "# User feedback\n\n## Decision\n\nThe user requested a different interaction direction.\n\n"
+            "## Requested changes\n\nRevise the design before producing another preview.\n\n"
+            "## Reason\n\nThe current direction does not match the intended workflow.\n",
+        )
+        result = self.run_tool(
+            "record-user-feedback",
+            "--verdict",
+            "request_changes",
+            "--summary",
+            "Revise the interaction design.",
+            "--affected-stage",
+            "design",
+            "--evidence",
+            str(evidence.relative_to(self.root)),
+        )
+        self.assertIn("workflow rewound to design", result.stdout)
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual("design", state["workflow"]["current_stage"])
+        self.assertEqual("request_changes", state["user_feedback_records"][-1]["verdict"])
+        self.assertEqual("superseded", state["artifacts"]["prototype"]["status"])
 
     def test_trivial_document_and_non_required_reviewer_are_rejected(self) -> None:
         self.init("quick")
@@ -693,7 +948,7 @@ class WorkflowToolTests(unittest.TestCase):
     def test_state_revision_increments_and_schema_is_validated(self) -> None:
         self.init("quick")
         initial = json.loads(self.run_tool("status", "--json").stdout)
-        self.assertEqual(3, initial["schema_version"])
+        self.assertEqual(4, initial["schema_version"])
         self.assertEqual(1, initial["revision"])
 
         self.run_tool("advance")
@@ -709,6 +964,23 @@ class WorkflowToolTests(unittest.TestCase):
         state_path.write_text(json.dumps(advanced), encoding="utf-8")
         rejected = self.run_tool("status", expected=2)
         self.assertIn("Unsupported schema_version", rejected.stderr)
+
+    def test_schema_v3_workflow_migrates_without_inserting_new_active_stages(self) -> None:
+        self.init("quick")
+        state_path = self.root / ".ai-workflow" / "REQ-test-flow" / "state.yaml"
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        state["schema_version"] = 3
+        state["workflow"].pop("requested_mode", None)
+        state["workflow"].pop("flow_stages", None)
+        state.pop("risk_assessment", None)
+        state.pop("user_feedback_records", None)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        migrated = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual(4, migrated["schema_version"])
+        self.assertNotIn("scope_check", migrated["workflow"]["flow_stages"])
+        self.run_tool("advance")
+        self.assertIn("Stage: clarification", self.run_tool("status").stdout)
 
     def test_workflow_ids_and_active_pointer_cannot_escape_repository(self) -> None:
         self.init("quick")
