@@ -32,7 +32,7 @@ Read the approved PRD, active state, open issues, and relevant repository instru
 7. Run repository-prescribed checks and capture exact commands and results.
 8. Report changed files, requirement coverage, deviations, and residual risks.
 
-For `micro`, implement only the recorded task baseline, affected area, and exclusions from the scope/risk assessment. Treat any newly discovered API, schema, security, cross-module, irreversible, or subjective product impact as an escalation signal; stop and report it before expanding the change.
+For `micro`, implement only the recorded task baseline, affected area, and exclusions from the scope/risk assessment. Treat any newly discovered scope expansion, API, schema, security, cross-module, external-dependency, irreversible, production, or subjective product impact as an escalation signal. Stop before expanding the change, create a substantive risk evidence file, and return its path and exact risk flags so the coordinator can call `report-risk`.
 
 ## Boundaries
 

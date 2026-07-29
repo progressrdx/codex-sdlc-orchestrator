@@ -33,7 +33,7 @@ except ImportError:  # JSON is valid YAML 1.2 and is the dependency-free fallbac
     yaml = None
 
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 WORKFLOW_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{2,80}")
 ROLES = ("product", "engineering", "testing")
 GATES = ("prd_review", "readiness_review", "acceptance")
@@ -240,6 +240,7 @@ STAGE_GUIDANCE = {
 
 MODE_RANK = {"micro": 0, "quick": 1, "standard": 2, "strict": 3}
 RISK_FLAGS = (
+    "scope_expansion",
     "user_visible",
     "subjective_judgment",
     "weak_verification",
@@ -248,6 +249,7 @@ RISK_FLAGS = (
     "data_schema",
     "cross_module",
     "business_ambiguity",
+    "systemic_verification_failure",
     "security_privacy",
     "irreversible",
     "data_migration",
@@ -264,6 +266,7 @@ REQUIREMENT_AREAS = (
     "acceptance_verification",
 )
 RISK_MINIMUM_MODE = {
+    "scope_expansion": "quick",
     "user_visible": "quick",
     "subjective_judgment": "quick",
     "weak_verification": "quick",
@@ -272,6 +275,7 @@ RISK_MINIMUM_MODE = {
     "data_schema": "standard",
     "cross_module": "standard",
     "business_ambiguity": "standard",
+    "systemic_verification_failure": "standard",
     "security_privacy": "strict",
     "irreversible": "strict",
     "data_migration": "strict",
@@ -460,7 +464,7 @@ def load_state(root: Path, workflow_id: str | None = None) -> tuple[Path, dict[s
 
 def migrate_state(root: Path, state: dict[str, Any]) -> None:
     version = state.get("schema_version")
-    if version in {1, 2, 3}:
+    if version in {1, 2, 3, 4}:
         state["schema_version"] = CURRENT_SCHEMA_VERSION
         state.setdefault("revision", 0)
         state.setdefault("human_approval_policy", {"required_gates": []})
@@ -472,6 +476,8 @@ def migrate_state(root: Path, state: dict[str, Any]) -> None:
             workflow.setdefault("flow_stages", list(LEGACY_V3_FLOWS[legacy_mode]))
         state.setdefault("risk_assessment", {"status": "legacy_not_required"})
         state.setdefault("user_feedback_records", [])
+        state.setdefault("risk_reports", [])
+        state.setdefault("escalation", {"status": "none"})
     for collection in ("artifacts", "human_approvals"):
         for item in state.get(collection, {}).values():
             if item.get("status") == "not_applicable" or item.get("evidence_sha256"):
@@ -537,10 +543,16 @@ def validate_state(state: dict[str, Any], path: Path) -> None:
     required_gates = state.get("human_approval_policy", {}).get("required_gates", [])
     if not isinstance(required_gates, list) or any(gate not in GATES for gate in required_gates):
         raise WorkflowError(f"Invalid human approval policy in {path}")
-    for name in ("artifacts", "decisions", "human_approvals"):
+    for name in ("artifacts", "decisions", "human_approvals", "escalation"):
         if not isinstance(state.get(name), dict):
             raise WorkflowError(f"Invalid {name} mapping in {path}")
-    for name in ("issues", "meetings", "history", "user_feedback_records"):
+    for name in (
+        "issues",
+        "meetings",
+        "history",
+        "user_feedback_records",
+        "risk_reports",
+    ):
         if not isinstance(state.get(name), list):
             raise WorkflowError(f"Invalid {name} list in {path}")
 
@@ -785,6 +797,14 @@ def stage_requirements(root: Path, state: dict[str, Any]) -> tuple[list[str], li
         if human_approval_required(state, stage) and not human_approval_ready(root, state, stage):
             missing.append(f"human_approval:{stage}")
 
+    escalation = state.get("escalation", {})
+    if escalation.get("status") == "required":
+        missing.append(f"escalation_required:{escalation.get('report_id', 'unknown')}")
+        notes.append(
+            f"mode {escalation.get('from_mode')} is below recommended "
+            f"{escalation.get('recommended_mode')}"
+        )
+
     blockers = open_blockers(state)
     if blockers:
         missing.extend(f"blocker:{item['id']}" for item in blockers)
@@ -837,9 +857,14 @@ def overview_payload(root: Path, state: dict[str, Any]) -> dict[str, Any]:
         "next_stage": next_stage,
         "next_stage_label": STAGE_LABELS.get(next_stage, next_stage) if next_stage else None,
         "next_action": (
-            f"Advance to {STAGE_LABELS.get(next_stage, next_stage)}."
-            if next_stage and not missing
-            else STAGE_GUIDANCE.get(stage, "Continue the current workflow stage.")
+            f"Review risk {state.get('escalation', {}).get('report_id')} and obtain explicit user approval to escalate from "
+            f"{state.get('escalation', {}).get('from_mode')} to at least {state.get('escalation', {}).get('recommended_mode')}."
+            if state.get("escalation", {}).get("status") == "required"
+            else (
+                f"Advance to {STAGE_LABELS.get(next_stage, next_stage)}."
+                if next_stage and not missing
+                else STAGE_GUIDANCE.get(stage, "Continue the current workflow stage.")
+            )
         ),
         "missing": missing,
         "notes": notes,
@@ -859,6 +884,7 @@ def overview_payload(root: Path, state: dict[str, Any]) -> dict[str, Any]:
         "human_approval_gates": state.get("human_approval_policy", {}).get("required_gates", []),
         "risk_recommendation": state.get("risk_assessment", {}).get("recommended_mode"),
         "enabled_stages": list(workflow_stages(state)),
+        "escalation": state.get("escalation", {"status": "none"}),
     }
 
 
@@ -891,6 +917,12 @@ def print_overview(payload: dict[str, Any]) -> None:
     if payload["risk_recommendation"]:
         print(f"Risk-recommended mode: {payload['risk_recommendation']}")
     print("Enabled stages: " + " -> ".join(payload["enabled_stages"]))
+    if payload["escalation"].get("status") == "required":
+        escalation = payload["escalation"]
+        print(
+            f"Escalation required: {escalation.get('from_mode')} -> "
+            f"{escalation.get('recommended_mode')} ({escalation.get('report_id')})"
+        )
     gates = payload["human_approval_gates"]
     print("Human approval gates: " + (",".join(gates) if gates else "none"))
 
@@ -1039,6 +1071,8 @@ def cmd_init(args: argparse.Namespace) -> None:
         "meetings": [],
         "risk_assessment": {"status": "pending"},
         "user_feedback_records": [],
+        "risk_reports": [],
+        "escalation": {"status": "none"},
         "history": [
             {"at": timestamp, "event": "initialized", "detail": f"Started {args.mode} workflow"}
         ],
@@ -1089,8 +1123,18 @@ def cmd_assess_risk(args: argparse.Namespace) -> None:
     workflow = state["workflow"]
     if workflow["current_stage"] != "scope_check":
         raise WorkflowError("Risk assessment can only be recorded during scope_check.")
+    if state.get("escalation", {}).get("status") == "required":
+        raise WorkflowError(
+            "Resolve the pending escalation with escalate-mode before refreshing scope_check."
+        )
 
-    flags = list(dict.fromkeys(args.risk or []))
+    reported_flags = [
+        str(flag)
+        for report in state.get("risk_reports", [])
+        if report.get("status") not in {"resolved", "withdrawn"}
+        for flag in report.get("flags", [])
+    ]
+    flags = list(dict.fromkeys(list(args.risk or []) + reported_flags))
     checked_areas = list(dict.fromkeys(args.checked_area or []))
     gaps = list(dict.fromkeys(args.gap or []))
     reasons = list(dict.fromkeys(args.reason or []))
@@ -1133,6 +1177,13 @@ def cmd_assess_risk(args: argparse.Namespace) -> None:
         "preview": preview,
     }
     stages = flow_for(selected, policy)
+    if selected == "strict":
+        required_gates = state.setdefault("human_approval_policy", {}).setdefault(
+            "required_gates", []
+        )
+        for gate in ("readiness_review", "acceptance"):
+            if gate not in required_gates:
+                required_gates.append(gate)
     configured_human = state.get("human_approval_policy", {}).get("required_gates", [])
     unavailable = [gate for gate in configured_human if gate not in stages]
     if unavailable:
@@ -1198,6 +1249,189 @@ def cmd_assess_risk(args: argparse.Namespace) -> None:
     print(f"Recommended mode: {recommended}")
     print(f"Selected mode: {selected}")
     print("Enabled conditional gates: " + ",".join(name for name, enabled in policy.items() if enabled) if any(policy.values()) else "Enabled conditional gates: none")
+
+
+def next_risk_report_id(state: dict[str, Any]) -> str:
+    numbers = []
+    for report in state.get("risk_reports", []):
+        match = re.fullmatch(r"RSK-(\d+)", str(report.get("id", "")))
+        if match:
+            numbers.append(int(match.group(1)))
+    return f"RSK-{max(numbers, default=0) + 1:03d}"
+
+
+def combined_risk_flags(state: dict[str, Any]) -> list[str]:
+    flags = list(state.get("risk_assessment", {}).get("flags", []))
+    for report in state.get("risk_reports", []):
+        if report.get("status") not in {"resolved", "withdrawn"}:
+            flags.extend(report.get("flags", []))
+    return list(dict.fromkeys(str(flag) for flag in flags if flag in RISK_FLAGS))
+
+
+def cmd_report_risk(args: argparse.Namespace) -> None:
+    root = repository_root(args.root)
+    path, state = load_state(root, args.id)
+    workflow = state["workflow"]
+    if workflow["status"] != "active" or workflow["mode"] == "auto":
+        raise WorkflowError("Report discovered risk only after the initial scope assessment.")
+    flags = list(dict.fromkeys(args.risk or []))
+    if not flags:
+        raise WorkflowError("At least one --risk flag is required.")
+    evidence_path, relative = repository_evidence_path(
+        root, args.evidence, minimum_chars=MIN_DOCUMENT_CHARS
+    )
+    require_markdown_structure(evidence_path)
+    evidence_hash = content_sha256(evidence_path)
+    for report in state.get("risk_reports", []):
+        if report.get("evidence_sha256") == evidence_hash:
+            raise WorkflowError(f"Risk evidence is already used by {report.get('id')}.")
+
+    report_id = next_risk_report_id(state)
+    combined = list(dict.fromkeys(combined_risk_flags(state) + flags))
+    recommended = recommended_mode_for(combined)
+    requires_escalation = MODE_RANK[recommended] > MODE_RANK[workflow["mode"]]
+    report = {
+        "id": report_id,
+        "source": args.source,
+        "summary": args.summary.strip(),
+        "flags": flags,
+        "status": "requires_escalation" if requires_escalation else "recorded",
+        "recommended_mode": recommended,
+        "evidence": str(relative),
+        "evidence_sha256": evidence_hash,
+        "at": now(),
+    }
+    state.setdefault("risk_reports", []).append(report)
+    add_history(state, "risk_reported", f"{report_id}:{args.source}:{','.join(flags)}")
+
+    if requires_escalation:
+        previous = state.get("escalation", {})
+        report_ids = list(previous.get("report_ids", [])) if previous.get("status") == "required" else []
+        report_ids.append(report_id)
+        previous_target = previous.get("recommended_mode", workflow["mode"])
+        target = (
+            recommended
+            if MODE_RANK[recommended] >= MODE_RANK.get(str(previous_target), -1)
+            else str(previous_target)
+        )
+        state["escalation"] = {
+            "status": "required",
+            "from_mode": workflow["mode"],
+            "recommended_mode": target,
+            "report_id": report_id,
+            "report_ids": list(dict.fromkeys(report_ids)),
+            "flags": combined,
+            "summary": args.summary.strip(),
+            "detected_by": args.source,
+            "at": now(),
+        }
+        add_history(state, "escalation_required", f"{workflow['mode']}->{target}:{report_id}")
+    save_state(path, state)
+    print(f"Recorded risk {report_id}: {relative}")
+    if requires_escalation:
+        print(
+            f"Escalation required: {workflow['mode']} -> at least "
+            f"{state['escalation']['recommended_mode']}"
+        )
+        print("Workflow advancement is blocked until explicit user approval is recorded.")
+    else:
+        print(f"Current mode {workflow['mode']} remains sufficient.")
+
+
+def cmd_escalate_mode(args: argparse.Namespace) -> None:
+    root = repository_root(args.root)
+    path, state = load_state(root, args.id)
+    escalation = state.get("escalation", {})
+    if escalation.get("status") != "required":
+        raise WorkflowError("No mode escalation is currently required.")
+    workflow = state["workflow"]
+    target = args.to_mode
+    recommended = str(escalation.get("recommended_mode"))
+    if MODE_RANK[target] < MODE_RANK[recommended]:
+        raise WorkflowError(
+            f"Selected escalation target {target} is below recommended mode {recommended}."
+        )
+    if MODE_RANK[target] <= MODE_RANK[workflow["mode"]]:
+        raise WorkflowError("Escalation target must be higher than the current mode.")
+
+    reports_by_id = {report.get("id"): report for report in state.get("risk_reports", [])}
+    for report_id in escalation.get("report_ids", []):
+        report = reports_by_id.get(report_id, {})
+        if not evidence_matches(
+            root, str(report.get("evidence", "")), report.get("evidence_sha256")
+        ):
+            raise WorkflowError(f"Escalation risk evidence is stale: {report_id}")
+    approval_path, approval_relative = repository_evidence_path(
+        root, args.evidence, minimum_chars=MIN_DOCUMENT_CHARS
+    )
+    require_markdown_structure(approval_path)
+    approval_hash = content_sha256(approval_path)
+    if approval_hash in {
+        reports_by_id[report_id].get("evidence_sha256")
+        for report_id in escalation.get("report_ids", [])
+        if report_id in reports_by_id
+    }:
+        raise WorkflowError("Escalation approval requires distinct evidence.")
+
+    flags = combined_risk_flags(state)
+    previous_policy = state.get("risk_assessment", {}).get("gate_policy", {})
+    policy = {
+        "clarification": bool(previous_policy.get("clarification")),
+        "requirement_confirmation": bool(previous_policy.get("requirement_confirmation")),
+        "preview": bool(previous_policy.get("preview"))
+        or any(flag in {"user_visible", "subjective_judgment"} for flag in flags),
+    }
+    if policy["clarification"]:
+        policy["requirement_confirmation"] = True
+    if target in {"standard", "strict"}:
+        policy = {
+            "clarification": True,
+            "requirement_confirmation": True,
+            "preview": True,
+        }
+    old_mode = workflow["mode"]
+    old_stage = workflow["current_stage"]
+    workflow["mode"] = target
+    workflow["flow_stages"] = list(flow_for(target, policy))
+    _, invalidated_artifacts, invalidated_meetings = rewind_workflow(
+        state,
+        "scope_check",
+        f"Mode escalation approved for {','.join(escalation.get('report_ids', []))}",
+    )
+    state.setdefault("risk_assessment", {})["status"] = "superseded"
+    if target == "strict":
+        required_gates = state.setdefault("human_approval_policy", {}).setdefault(
+            "required_gates", []
+        )
+        for gate in ("readiness_review", "acceptance"):
+            if gate not in required_gates:
+                required_gates.append(gate)
+    for report_id in escalation.get("report_ids", []):
+        if report_id in reports_by_id:
+            reports_by_id[report_id]["status"] = "escalated"
+            reports_by_id[report_id]["escalated_to"] = target
+    state["escalation"] = {
+        **escalation,
+        "status": "accepted",
+        "to_mode": target,
+        "approved_by": args.approved_by.strip(),
+        "approval_reason": args.reason.strip(),
+        "approval_evidence": str(approval_relative),
+        "approval_evidence_sha256": approval_hash,
+        "resolved_at": now(),
+    }
+    add_history(
+        state,
+        "mode_escalated",
+        f"{old_mode}->{target}:{old_stage}->scope_check:{escalation.get('report_id')}",
+    )
+    if invalidated_artifacts:
+        add_history(state, "artifacts_invalidated", ",".join(invalidated_artifacts))
+    if invalidated_meetings:
+        add_history(state, "meetings_invalidated", ",".join(invalidated_meetings))
+    save_state(path, state)
+    print(f"Mode escalation approved by {args.approved_by}: {old_mode} -> {target}")
+    print("Workflow rewound to scope_check; refresh the baseline before continuing.")
 
 
 def cmd_status(args: argparse.Namespace) -> None:
@@ -1844,6 +2078,30 @@ def build_parser() -> argparse.ArgumentParser:
     risk.add_argument("--needs-preview", choices=("auto", "yes", "no"), default="auto")
     risk.set_defaults(func=cmd_assess_risk)
 
+    report_risk = subparsers.add_parser(
+        "report-risk",
+        help="Record newly discovered risk and automatically require a safer mode when needed",
+    )
+    report_risk.add_argument(
+        "--source",
+        choices=("product", "engineering", "testing", "user", "coordinator"),
+        required=True,
+    )
+    report_risk.add_argument("--risk", action="append", choices=RISK_FLAGS, required=True)
+    report_risk.add_argument("--summary", required=True)
+    report_risk.add_argument("--evidence", required=True)
+    report_risk.set_defaults(func=cmd_report_risk)
+
+    escalate = subparsers.add_parser(
+        "escalate-mode",
+        help="Apply a user-approved mode escalation and rewind to scope_check",
+    )
+    escalate.add_argument("--to-mode", choices=tuple(MODE_RANK), required=True)
+    escalate.add_argument("--approved-by", required=True)
+    escalate.add_argument("--reason", required=True)
+    escalate.add_argument("--evidence", required=True)
+    escalate.set_defaults(func=cmd_escalate_mode)
+
     artifact = subparsers.add_parser("record-artifact", help="Record an existing repository artifact")
     artifact.add_argument("--name", choices=ARTIFACTS, required=True)
     artifact.add_argument("--path", required=True)
@@ -1939,6 +2197,8 @@ def main() -> int:
             "init",
             "start",
             "assess-risk",
+            "report-risk",
+            "escalate-mode",
             "record-artifact",
             "record-user-feedback",
             "add-issue",

@@ -1,6 +1,6 @@
 {
   "name": "multi-agent-role-work",
-  "version": "1.1.0+codex.20260729120812",
+  "version": "1.1.0+codex.20260729125453",
   "description": "A reliable multi-role SDLC workflow for Codex with review gates, human checkpoints, atomic state, and meeting records.",
   "author": {
     "name": "progressrdx",
@@ -19,13 +19,14 @@
   "interface": {
     "displayName": "Multi-Role SDLC",
     "shortDescription": "Risk-adaptive product, engineering, and testing workflow.",
-    "longDescription": "Run a formal software delivery workflow in any project without copying project files. The orchestrator first performs structured requirement-gap and risk triage, selects the lowest safe micro, quick, standard, or strict flow, conditionally asks for clarification and preview feedback, coordinates independent product, engineering, and testing work, and preserves versioned atomic state, optional human authorization checkpoints, and structured meeting records.",
+    "longDescription": "Run a formal software delivery workflow in any project without copying project files. The orchestrator performs structured requirement-gap and risk triage, selects the lowest safe micro, quick, standard, or strict flow, automatically blocks and recommends escalation when new evidence exceeds the current mode, conditionally asks for clarification and preview feedback, coordinates independent product, engineering, and testing work, and preserves versioned atomic state, human authorization checkpoints, and structured meeting records.",
     "developerName": "progressrdx",
     "category": "Productivity",
     "capabilities": [
       "Multi-agent coordination",
       "Atomic persistent workflow",
-      "Human review gates"
+      "Human review gates",
+      "Risk-based mode escalation"
     ],
     "defaultPrompt": [
       "\u542f\u52a8\u7814\u53d1\u6d41\u7a0b\uff1a\u63cf\u8ff0\u4f60\u7684\u9700\u6c42\uff0c\u6211\u4f1a\u5148\u68c0\u67e5\u9700\u6c42\u7f3a\u53e3\u548c\u98ce\u9669\uff0c\u518d\u63a8\u8350\u5408\u9002\u6d41\u7a0b\u3002",

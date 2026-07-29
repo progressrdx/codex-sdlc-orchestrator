@@ -653,6 +653,155 @@ class WorkflowToolTests(unittest.TestCase):
         self.run_tool("advance")
         self.assertIn("Stage: clarification", self.run_tool("status").stdout)
 
+    def test_discovered_risk_automatically_blocks_and_suggests_escalation(self) -> None:
+        self.init("micro")
+        self.run_tool("advance")
+        self.assess_risk("micro")
+        self.run_tool("advance")
+        self.record("implementation", "requirements/REQ-test-flow/implementation.md")
+        risk_evidence = self.write_artifact(
+            "requirements/REQ-test-flow/risks/RSK-api-change.md",
+            "# Discovered API risk\n\n## Evidence\n\nImplementation requires changing a public response field.\n\n"
+            "## Impact\n\nExisting callers may be incompatible and require contract verification.\n\n"
+            "## Recommendation\n\nEscalate before expanding implementation scope.\n",
+        )
+        reported = self.run_tool(
+            "report-risk",
+            "--source",
+            "engineering",
+            "--risk",
+            "api_change",
+            "--summary",
+            "The implementation requires a public API contract change.",
+            "--evidence",
+            str(risk_evidence.relative_to(self.root)),
+        )
+        self.assertIn("Escalation required: micro -> at least standard", reported.stdout)
+        blocked = self.run_tool("advance", expected=2)
+        self.assertIn("escalation_required:RSK-001", blocked.stderr)
+        overview = self.run_tool("overview")
+        self.assertIn("Escalation required: micro -> standard (RSK-001)", overview.stdout)
+
+        approval = self.write_artifact(
+            "requirements/REQ-test-flow/approvals/RSK-001-escalation.md",
+            "# Mode escalation approval\n\n## User decision\n\nAlice approved escalation to standard.\n\n"
+            "## Reason\n\nThe API compatibility risk requires product, engineering, and testing review.\n\n"
+            "## Scope\n\nRefresh the task baseline before continuing.\n",
+        )
+        too_low = self.run_tool(
+            "escalate-mode",
+            "--to-mode",
+            "quick",
+            "--approved-by",
+            "Alice",
+            "--reason",
+            "Attempt a mode below the recommendation.",
+            "--evidence",
+            str(approval.relative_to(self.root)),
+            expected=2,
+        )
+        self.assertIn("below recommended mode standard", too_low.stderr)
+        original_risk_evidence = risk_evidence.read_text(encoding="utf-8")
+        risk_evidence.write_text(
+            original_risk_evidence + "\nChanged after the escalation request.\n",
+            encoding="utf-8",
+        )
+        stale = self.run_tool(
+            "escalate-mode",
+            "--to-mode",
+            "standard",
+            "--approved-by",
+            "Alice",
+            "--reason",
+            "Try to approve stale evidence.",
+            "--evidence",
+            str(approval.relative_to(self.root)),
+            expected=2,
+        )
+        self.assertIn("Escalation risk evidence is stale: RSK-001", stale.stderr)
+        risk_evidence.write_text(original_risk_evidence, encoding="utf-8")
+        escalated = self.run_tool(
+            "escalate-mode",
+            "--to-mode",
+            "standard",
+            "--approved-by",
+            "Alice",
+            "--reason",
+            "The user approved full API compatibility review.",
+            "--evidence",
+            str(approval.relative_to(self.root)),
+        )
+        self.assertIn("micro -> standard", escalated.stdout)
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual("scope_check", state["workflow"]["current_stage"])
+        self.assertEqual("standard", state["workflow"]["mode"])
+        self.assertEqual("accepted", state["escalation"]["status"])
+        self.assertEqual("escalated", state["risk_reports"][0]["status"])
+        self.assertEqual("superseded", state["artifacts"]["implementation"]["status"])
+        blocked_scope = self.run_tool("advance", expected=2)
+        self.assertIn("artifact:risk_assessment", blocked_scope.stderr)
+        self.assess_risk(
+            "standard",
+            risks=("api_change",),
+            gaps=("Existing API callers need a compatibility decision.",),
+        )
+        self.run_tool("advance")
+        self.assertIn("Stage: clarification", self.run_tool("status").stdout)
+
+    def test_strict_escalation_adds_human_readiness_and_acceptance_gates(self) -> None:
+        self.init("quick")
+        self.run_tool("advance")
+        self.assess_risk(
+            "quick",
+            risks=("user_visible",),
+            clarification="no",
+            confirmation="no",
+            preview="yes",
+        )
+        self.run_tool("advance")
+        risk_evidence = self.write_artifact(
+            "requirements/REQ-test-flow/risks/RSK-migration.md",
+            "# Migration risk\n\n## Evidence\n\nThe change requires an irreversible production data migration.\n\n"
+            "## Impact\n\nRollback and data validation need explicit authorization.\n\n"
+            "## Recommendation\n\nEscalate to strict with human checkpoints.\n",
+        )
+        self.run_tool(
+            "report-risk",
+            "--source",
+            "engineering",
+            "--risk",
+            "data_migration",
+            "--risk",
+            "irreversible",
+            "--summary",
+            "An irreversible production data migration is required.",
+            "--evidence",
+            str(risk_evidence.relative_to(self.root)),
+        )
+        approval = self.write_artifact(
+            "requirements/REQ-test-flow/approvals/RSK-001-strict.md",
+            "# Strict escalation approval\n\n## User decision\n\nAlice approved strict mode.\n\n"
+            "## Reason\n\nMigration and rollback require human checkpoints.\n\n"
+            "## Scope\n\nReassess the complete delivery plan.\n",
+        )
+        self.run_tool(
+            "escalate-mode",
+            "--to-mode",
+            "strict",
+            "--approved-by",
+            "Alice",
+            "--reason",
+            "The migration requires strict governance.",
+            "--evidence",
+            str(approval.relative_to(self.root)),
+        )
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual("strict", state["workflow"]["mode"])
+        self.assertEqual(
+            ["readiness_review", "acceptance"],
+            state["human_approval_policy"]["required_gates"],
+        )
+
     def test_change_request_feedback_is_preserved_and_rewinds_design(self) -> None:
         self.init("quick")
         self.complete_discovery()
@@ -878,6 +1027,11 @@ class WorkflowToolTests(unittest.TestCase):
     def test_strict_mode_requires_explicit_database_and_release_artifacts(self) -> None:
         self.init("strict")
         self.complete_discovery()
+        strict_state = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual(
+            ["readiness_review", "acceptance"],
+            strict_state["human_approval_policy"]["required_gates"],
+        )
         self.record("prd", "requirements/REQ-test-flow/01-prd.md")
         self.run_tool("advance")
         self.approve("prd_review", ("product", "engineering", "testing"))
@@ -948,7 +1102,7 @@ class WorkflowToolTests(unittest.TestCase):
     def test_state_revision_increments_and_schema_is_validated(self) -> None:
         self.init("quick")
         initial = json.loads(self.run_tool("status", "--json").stdout)
-        self.assertEqual(4, initial["schema_version"])
+        self.assertEqual(5, initial["schema_version"])
         self.assertEqual(1, initial["revision"])
 
         self.run_tool("advance")
@@ -977,7 +1131,7 @@ class WorkflowToolTests(unittest.TestCase):
         state_path.write_text(json.dumps(state), encoding="utf-8")
 
         migrated = json.loads(self.run_tool("status", "--json").stdout)
-        self.assertEqual(4, migrated["schema_version"])
+        self.assertEqual(5, migrated["schema_version"])
         self.assertNotIn("scope_check", migrated["workflow"]["flow_stages"])
         self.run_tool("advance")
         self.assertIn("Stage: clarification", self.run_tool("status").stdout)

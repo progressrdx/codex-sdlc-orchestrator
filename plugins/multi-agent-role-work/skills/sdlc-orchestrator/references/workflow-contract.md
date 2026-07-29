@@ -12,11 +12,11 @@ Use `start --request "..." --mode auto` as the default initialization path for n
 - `micro`: intake, scope/risk check, implementation, independent verification, completion. Use only for explicit, localized, low-risk work with reliable verification.
 - `quick`: intake, scope/risk check, lightweight design/test planning, readiness review, implementation, verification, and acceptance. Clarification, requirement confirmation, prototype, and user feedback are enabled only when the risk assessment requires them.
 - `standard`: intake, scope/risk check, clarification, user confirmation, PRD and three-role PRD review, design/test planning, readiness review, prototype or MVP preview, user feedback, implementation, verification, acceptance.
-- `strict`: standard flow plus explicit database and release-plan artifacts, each allowed to be marked not applicable with justification.
+- `strict`: standard flow plus explicit database and release-plan artifacts, each allowed to be marked not applicable with justification, and human approval checkpoints at readiness and acceptance.
 
 The risk assessment recommends the lowest safe mode from explicit flags. A user-requested mode is a floor, and the selected mode must never be below the deterministic recommendation. Always perform the gap analysis; skip user questions only when no unresolved high-impact choice exists.
 
-Modes may escalate `micro → quick → standard → strict` when new evidence appears. Present the evidence and increased workflow cost, reopen at `scope_check`, and record a new assessment. Do not silently broaden the work. Downgrades require a new assessment showing why the earlier risk no longer applies.
+Modes may escalate `micro → quick → standard → strict` when new evidence appears. Every role reports newly discovered risk with separate repository evidence. `report-risk` combines active flags, calculates the minimum safe mode, records `escalation_required`, and blocks all advancement when the current mode is insufficient. It recommends an upgrade; it does not silently apply one. After explicit user approval, `escalate-mode` binds separate approval evidence, switches to the approved mode, invalidates downstream work, and rewinds to `scope_check` for a refreshed baseline. Targets below the recommendation are rejected. Strict escalation automatically configures human checkpoints at readiness and acceptance. Downgrades require a new assessment showing why the earlier risk no longer applies.
 
 ## Artifacts
 
@@ -67,7 +67,7 @@ The state tool automatically rewinds to the earliest affected stage when a recor
 
 ## Evidence
 
-Statements such as “implemented”, “tested”, or “approved” require a path, command result, review record, or other inspectable evidence. Never use confidence language as evidence. Evidence hashes are rechecked when a gate is evaluated; changing an indexed artifact, review, meeting record, or human approval makes it stale until it is re-recorded and, where applicable, re-reviewed.
+Statements such as “implemented”, “tested”, or “approved” require a path, command result, review record, or other inspectable evidence. Never use confidence language as evidence. Evidence hashes are rechecked when a gate is evaluated; changing an indexed artifact, review, meeting record, or human approval makes it stale until it is re-recorded and, where applicable, re-reviewed. Risk-report hashes are rechecked immediately before an escalation is accepted, and escalation approval must use separate evidence.
 
 The state script is not an authentication boundary. Enforce reviewer independence operationally by delegating to separate agents, using unique review files, and preserving their unedited findings. Deterministic checks reject missing or trivial evidence but cannot prove that a document is correct.
 

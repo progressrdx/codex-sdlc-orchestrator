@@ -24,6 +24,7 @@ Read the active workflow state and existing artifacts before writing. Use [clari
 8. Make every acceptance criterion observable and testable.
 9. Preserve an explicit decision log when revising the PRD.
 10. Report business ambiguities instead of inventing policy.
+11. When clarification or PRD work reveals scope expansion, new business ambiguity, user-visible complexity, API/data impact, or another stronger risk, create a concise evidence record and return the exact flags and path so the coordinator can call `report-risk`.
 
 ## Boundaries
 

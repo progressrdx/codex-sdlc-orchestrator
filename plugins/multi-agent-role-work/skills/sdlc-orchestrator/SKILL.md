@@ -18,7 +18,7 @@ Keep the main thread focused on business decisions, state transitions, and synth
 
 At `scope_check`, always analyze every `assess-risk --checked-area` category: actors/permissions, goals/scope, business rules/states, data/API effects, failures/edges, compatibility/rollout, subjective choices, and acceptance/verification. This thinking is mandatory; user questions are conditional. If no unresolved high-impact gap exists, record that conclusion and avoid ceremonial questions. Record the result with `assess-risk`, present the recommendation and reasons, and never select a mode below the deterministic safe minimum. An explicitly requested mode is a floor.
 
-If engineering or testing discovers a risk inconsistent with the selected mode, stop before expanding scope, explain the evidence and proposed higher mode, then `reopen --stage scope_check --reason ...` and run `assess-risk` again with the new flags. Do not silently escalate effort or silently continue under a weaker flow.
+If any role discovers a new risk, preserve a substantive risk record and call `report-risk`. The state tool combines current and newly reported flags, calculates the minimum safe mode, and blocks every transition with `escalation_required` when the current mode is too weak. Present the report, affected workflow cost, and recommended mode to the user. Only after explicit approval, preserve separate approval evidence and call `escalate-mode`; it switches mode, rewinds to `scope_check`, invalidates downstream evidence, and requires a refreshed baseline. Do not silently escalate effort or continue under a weaker flow.
 
 Require a human checkpoint for destructive data changes, permission changes, production release authorization, security exceptions, legal/compliance decisions, or another irreversible/high-impact action. Use `readiness_review` when authorization is needed before implementation and `acceptance` when authorization is needed before final delivery. Tell the user which checkpoints were configured.
 
@@ -51,6 +51,8 @@ Only route stages present in the state's `flow_stages`. In `micro`, assign imple
 
 - Record artifacts only after checking that the referenced path exists.
 - Do not advance past `scope_check` without a current structured risk assessment and task baseline. Never treat a short request as proof that no gaps or risks exist.
+- When a role reports scope expansion, API/data impact, business ambiguity, weak verification, external dependency, systemic failure, security/privacy, migration, production, or irreversible risk, call `report-risk` before continuing. Never hide a discovered trigger inside an implementation summary.
+- Treat `escalation_required` as a hard stop. Do not call `escalate-mode` until the user or named authority explicitly approves the displayed risk evidence and target mode. Never choose a target below the recommendation.
 - Do not advance past `clarification` until the product role has identified missing details, ambiguity, assumptions, and acceptance-criteria gaps. The coordinator should ask only the high-impact questions needed to avoid wasted downstream work.
 - Do not advance past `requirement_confirmation` until the user explicitly confirms the synthesized requirement understanding.
 - When `user_feedback` is enabled, do not advance until the user has inspected a prototype, MVP, screenshot, demo, or equivalent preview and explicitly approves the direction through `record-user-feedback --verdict approve`.
@@ -83,6 +85,8 @@ workflow.py overview
 workflow.py status
 workflow.py next
 workflow.py assess-risk --help
+workflow.py report-risk --source engineering --risk api_change --summary "..." --evidence docs/requirements/.../risks/RSK-api.md
+workflow.py escalate-mode --to-mode standard --approved-by "user" --reason "..." --evidence docs/requirements/.../approvals/RSK-escalation.md
 workflow.py record-artifact --name clarification_questions --path docs/requirements/.../00-clarification.md
 workflow.py record-artifact --name requirement_confirmation --path docs/requirements/.../00-requirement-confirmation.md
 workflow.py record-artifact --name prd --path docs/requirements/.../01-prd.md

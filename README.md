@@ -75,9 +75,11 @@ intake → scope_check → clarification → requirement_confirmation
 
 - `micro` is the tracked path for explicit, localized, low-risk work: `intake → scope_check → implementation → verification → completed`.
 - `quick` skips the full PRD stage. Clarification, requirement confirmation, prototype preview, and user feedback are enabled only when scope, ambiguity, or user-visible judgment requires them.
-- `strict` additionally requires explicit database-design and release-plan artifacts; they may be marked not applicable with justification.
+- `strict` additionally requires explicit database-design and release-plan artifacts plus human approval at readiness and acceptance; the artifacts may be marked not applicable with justification.
 
 Natural-language starts use temporary `auto` mode. During `scope_check`, the coordinator must explicitly check actors/permissions, goals/scope, business rules/states, data/API effects, failures/edges, compatibility/rollout, subjective choices, and acceptance/verification. It records scope, exclusions, unresolved gaps, and risk flags, then recommends `micro`, `quick`, `standard`, or `strict`. API/data changes, cross-module behavior, security/privacy, migrations, production actions, and irreversible work raise the minimum mode. An explicitly requested mode is never silently downgraded.
+
+The selected mode can grow with the work: `micro → quick → standard → strict`. When product, engineering, or testing reports a newly discovered risk, the state tool automatically recalculates the minimum safe mode. If the current mode is too weak, advancement stops and `overview` explains the risk and recommended upgrade. The mode changes only after explicit user approval; approval rewinds to `scope_check`, preserves the escalation record, and invalidates affected downstream evidence. A strict escalation automatically enables human approval at readiness and acceptance.
 
 Enabled PRD review, readiness review, and acceptance gates require independent role verdicts plus current meeting notes covering all required roles. Unresolved blockers prevent the workflow from advancing. When preview is enabled, explicit user approval is required before implementation. A user `request_changes` or `reject` verdict is preserved and automatically rewinds the workflow to the affected stage.
 
@@ -91,6 +93,7 @@ Workflow state uses:
 - Automatic rollback to the earliest affected stage when an upstream artifact changes.
 - Required user confirmation and preview feedback whenever those gates are enabled by the selected flow.
 - Risk-based `micro`, `quick`, `standard`, and `strict` selection, with conditional clarification and preview gates for quick work.
+- Evidence-backed automatic escalation recommendations that block unsafe continuation until the user approves a higher mode.
 - First-class user feedback decisions: approve, request changes, or reject.
 - Formal major-issue disposition: acceptance blocks on open major findings unless a named authority records an evidenced risk acceptance or scheduled deferral.
 
