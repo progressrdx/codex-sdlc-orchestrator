@@ -34,7 +34,7 @@ Read the approved PRD, active state, open issues, and relevant repository instru
 9. Distinguish prototype-only shortcuts and debug controls from release behavior. Remove mock-state selectors, debug buttons, placeholder strings, and dead navigation unless they are explicitly approved product features.
 10. For every external URL or cross-application action, provide a runnable verification path; source inspection is not proof that the destination works.
 11. Do not present absent or unsupported source data as a valid number. Use product-approved semantic states and copy, and verify truncation/overflow at the real target size.
-12. Before strict verification, commit the exact source under test and provide the build and test commands so the coordinator can call `record-source-revision`. Any later source change requires a new binding and rerun.
+12. Before strict verification, commit the exact source under test and provide the tester with the build command, test command, and a reviewed repository-relative source scope covering every production and test path that can affect the delivery. Any later scoped source change requires a new binding and rerun.
 
 For `micro`, implement only the recorded task baseline, affected area, and exclusions from the scope/risk assessment. Treat any newly discovered scope expansion, API, schema, security, cross-module, external-dependency, irreversible, production, or subjective product impact as an escalation signal. Stop before expanding the change, create a substantive risk evidence file, and return its path and exact risk flags so the coordinator can call `report-risk`.
 

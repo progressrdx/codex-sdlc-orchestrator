@@ -29,7 +29,7 @@ SCRIPT = (
 class WorkflowToolTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.meeting_counter = 0
         self.risk_assessment_counter = 0
 
@@ -162,6 +162,30 @@ class WorkflowToolTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
         return path
+
+    def initialize_git_source(self) -> Path:
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.root), "config", "user.email", "tests@example.com"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "config", "user.name", "Workflow Tests"],
+            check=True,
+        )
+        source = self.root / "app.py"
+        source.write_text("print('verified')\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.root), "add", "app.py"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "commit", "-qm", "verified source"], check=True)
+        return source
+
+    def workflow_module(self):
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            import workflow as workflow_module
+        finally:
+            sys.path.pop(0)
+        return workflow_module
 
     def record(
         self,
@@ -1012,6 +1036,12 @@ class WorkflowToolTests(unittest.TestCase):
         self.assertEqual("accepted_risk", state["escalation"]["status"])
         self.assertEqual("reduced", state["escalation"]["assurance"])
         self.assertEqual("accepted_risk", state["risk_reports"][0]["status"])
+        workflow_module = self.workflow_module()
+        state_path, state = workflow_module.load_state(self.root)
+        state["escalation"]["acceptance_expires_on"] = "2000-01-01"
+        workflow_module.save_state(state_path, state)
+        expired = self.run_tool("advance", expected=2)
+        self.assertIn("escalation_acceptance_expired:RSK-001", expired.stderr)
 
     def test_strict_escalation_adds_human_readiness_and_acceptance_gates(self) -> None:
         self.init("quick")
@@ -1395,34 +1425,280 @@ class WorkflowToolTests(unittest.TestCase):
         rejected = self.run_tool("status", expected=2)
         self.assertIn("integrity check failed", rejected.stderr)
 
+    def test_state_audit_and_backup_repair_recover_from_corruption(self) -> None:
+        self.init("quick")
+        self.run_tool("advance")
+        state_path = self.root / ".ai-workflow" / "REQ-test-flow" / "state.yaml"
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        state["workflow"]["title"] = "Corrupted manually"
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        audit = json.loads(self.run_tool("audit-state", "--json").stdout)
+        self.assertFalse(audit["checksum_valid"])
+        self.assertTrue(audit["backup_valid"])
+        self.assertTrue(audit["repair_available"])
+        self.run_tool(
+            "repair-state",
+            "--from-backup",
+            "--confirm",
+            "RESTORE",
+        )
+        restored = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual("Test workflow", restored["workflow"]["title"])
+
+        state_path.write_text("{ malformed", encoding="utf-8")
+        malformed_audit = json.loads(self.run_tool("audit-state", "--json").stdout)
+        self.assertFalse(malformed_audit["checksum_valid"])
+        self.assertTrue(malformed_audit["parse_error"])
+        self.assertTrue(malformed_audit["repair_available"])
+        self.run_tool(
+            "repair-state",
+            "--from-backup",
+            "--confirm",
+            "RESTORE",
+        )
+        self.run_tool("status")
+
     def test_source_fingerprint_detects_post_verification_code_change(self) -> None:
-        sys.path.insert(0, str(SCRIPT.parent))
-        try:
-            import workflow as workflow_module
-        finally:
-            sys.path.pop(0)
-        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
-        subprocess.run(
-            ["git", "-C", str(self.root), "config", "user.email", "tests@example.com"],
-            check=True,
-        )
-        subprocess.run(
-            ["git", "-C", str(self.root), "config", "user.name", "Workflow Tests"],
-            check=True,
-        )
-        source = self.root / "app.py"
-        source.write_text("print('verified')\n", encoding="utf-8")
-        subprocess.run(["git", "-C", str(self.root), "add", "app.py"], check=True)
-        subprocess.run(["git", "-C", str(self.root), "commit", "-qm", "verified source"], check=True)
+        workflow_module = self.workflow_module()
+        source = self.initialize_git_source()
+        other = self.root / "other-module" / "other.py"
+        other.parent.mkdir()
+        other.write_text("VALUE = 1\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.root), "add", str(other.relative_to(self.root))], check=True)
+        subprocess.run(["git", "-C", str(self.root), "commit", "-qm", "other module"], check=True)
 
         verified = workflow_module.current_source_fingerprint(self.root)
         self.assertEqual([], verified["dirty_paths"])
         source.write_text("print('changed after verification')\n", encoding="utf-8")
         changed = workflow_module.current_source_fingerprint(self.root)
         self.assertIn("app.py", changed["dirty_paths"])
-        self.assertNotEqual(
+        self.assertEqual(
             verified["source_tree_sha256"],
             changed["source_tree_sha256"],
+        )
+        scoped = workflow_module.current_source_fingerprint(self.root, ("other-module",))
+        self.assertEqual([], scoped["dirty_paths"])
+
+    def test_journey_can_record_blocked_result_without_claiming_success(self) -> None:
+        self.init("strict")
+        source = self.initialize_git_source()
+        workflow_module = self.workflow_module()
+        state_path, state = workflow_module.load_state(self.root)
+        state["workflow"]["current_stage"] = "verification"
+        workflow_module.save_state(state_path, state)
+        source_evidence = self.write_artifact(
+            "requirements/REQ-test-flow/source.md",
+            "# Source verification\n\n## Build\n\nThe build command completed.\n\n"
+            "## Tests\n\nThe focused test command completed.\n\n## Revision\n\nThe committed source is under test.\n",
+        )
+        source.write_text("print('dirty')\n", encoding="utf-8")
+        dirty = self.run_tool(
+            "record-source-revision",
+            "--evidence",
+            str(source_evidence.relative_to(self.root)),
+            "--build-command",
+            "python -m build",
+            "--test-command",
+            "python -m unittest",
+            "--source-path",
+            "app.py",
+            expected=2,
+        )
+        self.assertIn("Commit the exact source", dirty.stderr)
+        source.write_text("print('verified')\n", encoding="utf-8")
+        self.run_tool(
+            "record-source-revision",
+            "--evidence",
+            str(source_evidence.relative_to(self.root)),
+            "--build-command",
+            "python -m build",
+            "--test-command",
+            "python -m unittest",
+            "--source-path",
+            "app.py",
+        )
+        journey = self.write_artifact(
+            "requirements/REQ-test-flow/journey-blocked.md",
+            "# CLI journey\n\n## launch and core_outcomes\n\nlaunch pass; core_outcomes pass.\n\n"
+            "## content_semantics and interactions\n\ncontent_semantics pass; interactions blocked.\n\n"
+            "## release_hygiene and source_truth\n\nrelease_hygiene pass; source_truth pass.\n",
+        )
+        recorded = self.run_tool(
+            "record-user-journey",
+            "--profile",
+            "cli",
+            "--check",
+            "launch=pass",
+            "--check",
+            "core_outcomes=pass",
+            "--check",
+            "content_semantics=pass",
+            "--check",
+            "interactions=blocked",
+            "--check",
+            "release_hygiene=pass",
+            "--check",
+            "source_truth=pass",
+            "--evidence",
+            str(journey.relative_to(self.root)),
+        )
+        self.assertIn("non-passing checks: interactions", recorded.stdout)
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual("blocked", state["journey_validation"]["checks"]["interactions"])
+        blocked = self.run_tool("advance", expected=2)
+        self.assertIn("journey_validation:final_user_journey", blocked.stderr)
+
+    def test_submit_verification_registers_one_atomic_bundle(self) -> None:
+        self.init("strict")
+        self.initialize_git_source()
+        workflow_module = self.workflow_module()
+        state_path, state = workflow_module.load_state(self.root)
+        state["workflow"]["current_stage"] = "verification"
+        state["acceptance_criteria"] = {
+            "AC-001": {
+                "description": "The CLI reports the correct result.",
+                "priority": "must",
+                "prd_sha256": "test-prd",
+            }
+        }
+        workflow_module.save_state(state_path, state)
+        source_evidence = self.write_artifact(
+            "requirements/REQ-test-flow/source-bundle.md",
+            "# Source evidence\n\n## Build\n\nBuild passed.\n\n## Tests\n\nTests passed.\n\n"
+            "## Revision\n\nThe committed app.py source is the verified delivery scope.\n",
+        )
+        criterion = self.write_artifact(
+            "requirements/REQ-test-flow/ac-001.md",
+            "# AC-001 verification\n\n## Expected\n\nThe CLI reports the correct result.\n\n"
+            "## Executed\n\nThe behavior was exercised.\n\n## Verdict\n\nAC-001 pass.\n",
+        )
+        journey = self.write_artifact(
+            "requirements/REQ-test-flow/journey-bundle.md",
+            "# CLI journey\n\n## launch and core_outcomes\n\nlaunch pass; core_outcomes pass.\n\n"
+            "## content_semantics and interactions\n\ncontent_semantics pass; interactions pass.\n\n"
+            "## release_hygiene and source_truth\n\nrelease_hygiene pass; source_truth pass.\n",
+        )
+        manifest = self.root / "docs" / "requirements" / "REQ-test-flow" / "verification.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "source": {
+                        "evidence": str(source_evidence.relative_to(self.root)),
+                        "build_command": "python -m build",
+                        "test_command": "python -m unittest",
+                        "paths": ["app.py"],
+                    },
+                    "criteria": [
+                        {
+                            "id": "AC-001",
+                            "verdict": "pass",
+                            "evidence": str(criterion.relative_to(self.root)),
+                        }
+                    ],
+                    "journey": {
+                        "profile": "cli",
+                        "evidence": str(journey.relative_to(self.root)),
+                        "checks": {
+                            "launch": "pass",
+                            "core_outcomes": "pass",
+                            "content_semantics": "pass",
+                            "interactions": "pass",
+                            "release_hygiene": "pass",
+                            "source_truth": "pass",
+                        },
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        before = json.loads(self.run_tool("status", "--json").stdout)["revision"]
+        self.run_tool(
+            "submit-verification",
+            "--manifest",
+            str(manifest.relative_to(self.root)),
+        )
+        after = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual(before + 1, after["revision"])
+        self.assertEqual("pass", after["criterion_verdicts"]["AC-001"]["verdict"])
+        self.assertEqual("cli", after["journey_validation"]["profile"])
+        self.assertEqual(["app.py"], after["source_revision"]["scope_paths"])
+
+    def test_scope_change_authorizes_not_applicable_criterion(self) -> None:
+        self.init("strict")
+        self.initialize_git_source()
+        workflow_module = self.workflow_module()
+        state_path, state = workflow_module.load_state(self.root)
+        state["workflow"]["current_stage"] = "verification"
+        state["acceptance_criteria"] = {
+            "AC-001": {
+                "description": "Optional integration behavior.",
+                "priority": "must",
+                "prd_sha256": "test-prd",
+            }
+        }
+        workflow_module.save_state(state_path, state)
+        approval = self.write_artifact(
+            "requirements/REQ-test-flow/scope-change.md",
+            "# Scope change\n\n## User approval\n\nUser Alice approved deferring AC-001.\n\n"
+            "## Reason\n\nThe optional integration is removed from this delivery.\n\n"
+            "## Decision\n\nAC-001 is explicitly not applicable for this version.\n",
+        )
+        self.run_tool(
+            "approve-scope-change",
+            "--item",
+            "AC-001",
+            "--disposition",
+            "deferred",
+            "--approved-by",
+            "Alice",
+            "--reason",
+            "User approved deferral.",
+            "--evidence",
+            str(approval.relative_to(self.root)),
+        )
+        rewound = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual("prd", rewound["workflow"]["current_stage"])
+        state_path, state = workflow_module.load_state(self.root)
+        state["workflow"]["current_stage"] = "verification"
+        workflow_module.save_state(state_path, state)
+        source_evidence = self.write_artifact(
+            "requirements/REQ-test-flow/source-na.md",
+            "# Source verification\n\n## Build\n\nBuild passed.\n\n## Tests\n\nTests passed.\n\n"
+            "## Revision\n\nThe committed source is ready for criterion disposition.\n",
+        )
+        self.run_tool(
+            "record-source-revision",
+            "--evidence",
+            str(source_evidence.relative_to(self.root)),
+            "--build-command",
+            "python -m build",
+            "--test-command",
+            "python -m unittest",
+            "--source-path",
+            "app.py",
+        )
+        verdict = self.write_artifact(
+            "requirements/REQ-test-flow/ac-001-na.md",
+            "# AC-001 verdict\n\n## Scope decision\n\nSC-001 covers AC-001.\n\n"
+            "## Evidence\n\nThe user-approved deferral was reviewed.\n\n"
+            "## Verdict\n\nAC-001 not applicable.\n",
+        )
+        self.run_tool(
+            "record-criterion-verdict",
+            "--criterion-id",
+            "AC-001",
+            "--verdict",
+            "not_applicable",
+            "--scope-change-id",
+            "SC-001",
+            "--evidence",
+            str(verdict.relative_to(self.root)),
+        )
+        final_state = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual(
+            "not_applicable",
+            final_state["criterion_verdicts"]["AC-001"]["verdict"],
         )
 
     def test_reopen_invalidates_downstream_gate_decisions(self) -> None:
@@ -1455,14 +1731,17 @@ class WorkflowToolTests(unittest.TestCase):
         self.run_tool("advance")
         self.record("delivery_report", "requirements/REQ-test-flow/09-delivery.md")
         self.approve("acceptance", ("product", "engineering", "testing"))
+        delivery_stage = self.run_tool("advance")
+        self.assertIn("acceptance -> delivery_confirmation", delivery_stage.stdout)
+        self.confirm_delivery()
         completed = self.run_tool("advance")
-        self.assertIn("acceptance -> completed", completed.stdout)
+        self.assertIn("delivery_confirmation -> completed", completed.stdout)
         self.assertFalse((self.root / ".ai-workflow" / "active.yaml").exists())
 
     def test_state_revision_increments_and_schema_is_validated(self) -> None:
         self.init("quick")
         initial = json.loads(self.run_tool("status", "--json").stdout)
-        self.assertEqual(7, initial["schema_version"])
+        self.assertEqual(8, initial["schema_version"])
         self.assertEqual(1, initial["revision"])
 
         self.run_tool("advance")
@@ -1491,10 +1770,24 @@ class WorkflowToolTests(unittest.TestCase):
         state_path.write_text(json.dumps(state), encoding="utf-8")
 
         migrated = json.loads(self.run_tool("status", "--json").stdout)
-        self.assertEqual(7, migrated["schema_version"])
+        self.assertEqual(8, migrated["schema_version"])
         self.assertNotIn("scope_check", migrated["workflow"]["flow_stages"])
         self.run_tool("advance")
         self.assertIn("Stage: clarification", self.run_tool("status").stdout)
+
+    def test_schema_v5_micro_migration_adds_delivery_confirmation(self) -> None:
+        self.init("micro")
+        state_path = self.root / ".ai-workflow" / "REQ-test-flow" / "state.yaml"
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        state["schema_version"] = 5
+        state["workflow"]["flow_stages"].remove("delivery_confirmation")
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        migrated = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual(8, migrated["schema_version"])
+        self.assertEqual(
+            ["intake", "scope_check", "implementation", "verification", "delivery_confirmation", "completed"],
+            migrated["workflow"]["flow_stages"],
+        )
 
     def test_workflow_ids_and_active_pointer_cannot_escape_repository(self) -> None:
         self.init("quick")
@@ -1636,6 +1929,8 @@ class WorkflowToolTests(unittest.TestCase):
             str(evidence.relative_to(self.root)),
         )
         self.approve("acceptance", ("product", "engineering", "testing"))
+        self.run_tool("advance")
+        self.confirm_delivery()
         self.run_tool("advance")
         self.assertIn("Status: completed", self.run_tool("--id", "REQ-test-flow", "status").stdout)
 

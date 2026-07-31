@@ -27,6 +27,7 @@ from risk_policy import (
     recommended_mode_for,
     refresh_escalation,
 )
+from source_policy import SourcePolicyError, source_binding
 
 try:
     import fcntl  # type: ignore
@@ -44,7 +45,7 @@ except ImportError:  # JSON is valid YAML 1.2 and is the dependency-free fallbac
     yaml = None
 
 
-CURRENT_SCHEMA_VERSION = 7
+CURRENT_SCHEMA_VERSION = 8
 WORKFLOW_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{2,80}")
 ROLES = ("product", "engineering", "testing")
 GATES = ("prd_review", "readiness_review", "acceptance")
@@ -167,6 +168,42 @@ JOURNEY_CHECKS = (
     "release_hygiene",
     "source_truth",
 )
+JOURNEY_RESULTS = ("pass", "fail", "blocked", "not_applicable")
+JOURNEY_PROFILES = {
+    "web": JOURNEY_CHECKS,
+    "desktop": JOURNEY_CHECKS,
+    "api": (
+        "launch",
+        "core_outcomes",
+        "content_semantics",
+        "interactions",
+        "external_links",
+        "release_hygiene",
+        "source_truth",
+    ),
+    "cli": (
+        "launch",
+        "core_outcomes",
+        "content_semantics",
+        "interactions",
+        "release_hygiene",
+        "source_truth",
+    ),
+    "library": (
+        "core_outcomes",
+        "content_semantics",
+        "interactions",
+        "release_hygiene",
+        "source_truth",
+    ),
+    "data": (
+        "core_outcomes",
+        "content_semantics",
+        "interactions",
+        "release_hygiene",
+        "source_truth",
+    ),
+}
 FLOWS = {
     "auto": (
         "intake",
@@ -192,6 +229,7 @@ FLOWS = {
         "implementation",
         "verification",
         "acceptance",
+        "delivery_confirmation",
         "completed",
     ),
     "standard": (
@@ -208,6 +246,7 @@ FLOWS = {
         "implementation",
         "verification",
         "acceptance",
+        "delivery_confirmation",
         "completed",
     ),
     "strict": (
@@ -224,11 +263,16 @@ FLOWS = {
         "implementation",
         "verification",
         "acceptance",
+        "delivery_confirmation",
         "completed",
     ),
 }
 LEGACY_V3_FLOWS = {
-    mode: tuple(stage for stage in stages if stage != "scope_check")
+    mode: tuple(
+        stage
+        for stage in stages
+        if stage not in {"scope_check", "delivery_confirmation"}
+    )
     for mode, stages in FLOWS.items()
     if mode in {"quick", "standard", "strict"}
 }
@@ -304,7 +348,9 @@ def flow_for(mode: str, gate_policy: dict[str, bool] | None = None) -> tuple[str
     stages.extend(("design", "readiness_review"))
     if policy.get("preview"):
         stages.extend(("prototype", "user_feedback"))
-    stages.extend(("implementation", "verification", "acceptance", "completed"))
+    stages.extend(
+        ("implementation", "verification", "acceptance", "delivery_confirmation", "completed")
+    )
     return tuple(stages)
 
 
@@ -329,7 +375,10 @@ def load_data(path: Path) -> dict[str, Any]:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
         raise WorkflowError(f"State file not found: {path}") from exc
-    data = yaml.safe_load(text) if yaml else json.loads(text)
+    try:
+        data = yaml.safe_load(text) if yaml else json.loads(text)
+    except (ValueError, yaml.YAMLError if yaml else ValueError) as exc:
+        raise WorkflowError(f"Cannot parse state file {path}: {exc}") from exc
     if not isinstance(data, dict):
         raise WorkflowError(f"Invalid mapping in {path}")
     return data
@@ -468,7 +517,7 @@ def load_state(root: Path, workflow_id: str | None = None) -> tuple[Path, dict[s
 
 def migrate_state(root: Path, state: dict[str, Any]) -> None:
     version = state.get("schema_version")
-    if version in {1, 2, 3, 4, 5, 6}:
+    if version in {1, 2, 3, 4, 5, 6, 7}:
         state["schema_version"] = CURRENT_SCHEMA_VERSION
         state.setdefault("revision", 0)
         state.setdefault("human_approval_policy", {"required_gates": []})
@@ -483,11 +532,7 @@ def migrate_state(root: Path, state: dict[str, Any]) -> None:
         state.setdefault("delivery_confirmation_records", [])
         state.setdefault("risk_reports", [])
         state.setdefault("escalation", {"status": "none"})
-        if (
-            version == 5
-            and workflow.get("mode") == "micro"
-            and workflow.get("status") == "active"
-        ):
+        if version >= 5 and workflow.get("status") == "active":
             configured = workflow.get("flow_stages", [])
             if "delivery_confirmation" not in configured and "completed" in configured:
                 configured.insert(configured.index("completed"), "delivery_confirmation")
@@ -840,8 +885,9 @@ def stage_requirements(root: Path, state: dict[str, Any]) -> tuple[list[str], li
             ):
                 missing.append("acceptance_criteria:prd_baseline")
         if stage in {"verification", "acceptance"}:
+            scope_paths = tuple(state.get("source_revision", {}).get("scope_paths", []))
             try:
-                fingerprint = current_source_fingerprint(root)
+                fingerprint = current_source_fingerprint(root, scope_paths)
             except WorkflowError as exc:
                 missing.append("source_revision:git_unavailable")
                 notes.append(str(exc))
@@ -860,10 +906,18 @@ def stage_requirements(root: Path, state: dict[str, Any]) -> tuple[list[str], li
                 verdict = verdicts.get(criterion_id, {})
                 if (
                     not fingerprint["source_tree_sha256"]
-                    or not verdict_is_current(root, state, verdict, criterion_id)
+                    or not verdict_is_current(
+                        root,
+                        state,
+                        verdict,
+                        criterion_id,
+                        fingerprint["source_tree_sha256"],
+                    )
                 ):
                     missing.append(f"criterion_verdict:{criterion_id}")
             journey = state.get("journey_validation", {})
+            journey_profile = str(journey.get("profile", "web"))
+            required_checks = JOURNEY_PROFILES.get(journey_profile, JOURNEY_CHECKS)
             if not (
                 journey.get("source_tree_sha256") == fingerprint["source_tree_sha256"]
                 and evidence_matches(
@@ -871,7 +925,10 @@ def stage_requirements(root: Path, state: dict[str, Any]) -> tuple[list[str], li
                     str(journey.get("evidence", "")),
                     journey.get("evidence_sha256"),
                 )
-                and all(journey.get("checks", {}).get(check) == "pass" for check in JOURNEY_CHECKS)
+                and all(
+                    journey.get("checks", {}).get(check) == "pass"
+                    for check in required_checks
+                )
             ):
                 missing.append("journey_validation:final_user_journey")
         if stage == "acceptance":
@@ -879,7 +936,13 @@ def stage_requirements(root: Path, state: dict[str, Any]) -> tuple[list[str], li
                 outcome = state.get("core_outcomes", {}).get(goal_id, {})
                 if (
                     not fingerprint["source_tree_sha256"]
-                    or not outcome_is_current(root, state, outcome, goal_id)
+                    or not outcome_is_current(
+                        root,
+                        state,
+                        outcome,
+                        goal_id,
+                        fingerprint["source_tree_sha256"],
+                    )
                 ):
                     missing.append(f"core_outcome:{goal_id}")
 
@@ -937,9 +1000,12 @@ def scope_change_authorizes(
 
 
 def verdict_is_current(
-    root: Path, state: dict[str, Any], verdict: dict[str, Any], criterion_id: str
+    root: Path,
+    state: dict[str, Any],
+    verdict: dict[str, Any],
+    criterion_id: str,
+    source_hash: str,
 ) -> bool:
-    source_hash = current_source_fingerprint(root)["source_tree_sha256"]
     if verdict.get("source_tree_sha256") != source_hash or not evidence_matches(
         root, str(verdict.get("evidence", "")), verdict.get("evidence_sha256")
     ):
@@ -952,9 +1018,12 @@ def verdict_is_current(
 
 
 def outcome_is_current(
-    root: Path, state: dict[str, Any], outcome: dict[str, Any], goal_id: str
+    root: Path,
+    state: dict[str, Any],
+    outcome: dict[str, Any],
+    goal_id: str,
+    source_hash: str,
 ) -> bool:
-    source_hash = current_source_fingerprint(root)["source_tree_sha256"]
     if outcome.get("source_tree_sha256") != source_hash or not evidence_matches(
         root, str(outcome.get("evidence", "")), outcome.get("evidence_sha256")
     ):
@@ -966,60 +1035,13 @@ def outcome_is_current(
     )
 
 
-def current_source_fingerprint(root: Path) -> dict[str, Any]:
+def current_source_fingerprint(
+    root: Path, scope_paths: tuple[str, ...] = ()
+) -> dict[str, Any]:
     try:
-        head = subprocess.check_output(
-            ["git", "-C", str(root), "rev-parse", "HEAD"],
-            text=True,
-            stderr=subprocess.DEVNULL,
-        ).strip()
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise WorkflowError("Strict verification requires a Git repository with at least one commit.") from exc
-    ignored_prefixes = (".ai-workflow/", "docs/requirements/", ".idea/")
-    ignored_names = {".DS_Store"}
-    try:
-        output = subprocess.check_output(
-            ["git", "-C", str(root), "ls-files", "--cached", "--others", "--exclude-standard", "-z"]
-        )
-        status = subprocess.check_output(
-            ["git", "-C", str(root), "status", "--porcelain=v1", "-z"]
-        )
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise WorkflowError("Unable to inspect the Git source tree.") from exc
-
-    def relevant(raw: str) -> bool:
-        path = raw.strip()
-        return bool(path) and not path.startswith(ignored_prefixes) and Path(path).name not in ignored_names
-
-    files = sorted(path for path in output.decode("utf-8").split("\0") if relevant(path))
-    dirty_paths: list[str] = []
-    entries = status.decode("utf-8").split("\0")
-    index = 0
-    while index < len(entries):
-        entry = entries[index]
-        index += 1
-        if not entry:
-            continue
-        path = entry[3:] if len(entry) > 3 else ""
-        if entry[:2] in {"R ", "C "} and index < len(entries):
-            path = entries[index]
-            index += 1
-        if relevant(path):
-            dirty_paths.append(path)
-    digest = hashlib.sha256()
-    for relative in files:
-        absolute = root / relative
-        if not absolute.is_file():
-            continue
-        digest.update(relative.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(absolute.read_bytes())
-        digest.update(b"\0")
-    return {
-        "git_head": head,
-        "source_tree_sha256": digest.hexdigest(),
-        "dirty_paths": sorted(set(dirty_paths)),
-    }
+        return source_binding(root, scope_paths)
+    except SourcePolicyError as exc:
+        raise WorkflowError(str(exc)) from exc
 
 
 def outstanding_issues(state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1149,6 +1171,8 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
                 f"Workflow state changed concurrently: expected revision "
                 f"{expected_revision}, found {actual_revision}."
             )
+        verify_state_checksum(on_disk, path)
+        save_data(path.with_name("state.backup.yaml"), on_disk)
     state["schema_version"] = CURRENT_SCHEMA_VERSION
     state["revision"] = expected_revision + 1
     state["state_checksum"] = state_checksum(state)
@@ -1833,6 +1857,88 @@ def cmd_status(args: argparse.Namespace) -> None:
         print(f"- note:{item}")
 
 
+def cmd_audit_state(args: argparse.Namespace) -> None:
+    root = repository_root(args.root)
+    path = state_path(root, args.id)
+    parse_error = ""
+    try:
+        raw = load_data(path)
+    except WorkflowError as exc:
+        raw = {}
+        parse_error = str(exc)
+    expected = raw.get("state_checksum")
+    actual = state_checksum(raw) if raw else None
+    checksum_valid = (
+        bool(raw)
+        and (raw.get("schema_version") != CURRENT_SCHEMA_VERSION or expected == actual)
+    )
+    backup_path = path.with_name("state.backup.yaml")
+    backup_valid = False
+    backup_revision: int | None = None
+    if backup_path.exists():
+        try:
+            backup = load_data(backup_path)
+            verify_state_checksum(backup, backup_path)
+            validate_state(backup, backup_path)
+            backup_valid = True
+            backup_revision = int(backup.get("revision", 0))
+        except (WorkflowError, ValueError, TypeError):
+            backup_valid = False
+    payload = {
+        "path": str(path.relative_to(root)),
+        "parse_error": parse_error or None,
+        "schema_version": raw.get("schema_version"),
+        "revision": raw.get("revision"),
+        "checksum_valid": checksum_valid,
+        "expected_checksum": expected,
+        "actual_checksum": actual,
+        "backup_path": str(backup_path.relative_to(root)),
+        "backup_exists": backup_path.exists(),
+        "backup_valid": backup_valid,
+        "backup_revision": backup_revision,
+        "repair_available": backup_valid,
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return
+    print(f"State: {payload['path']}")
+    if parse_error:
+        print(f"Parse error: {parse_error}")
+    print(f"Checksum: {'valid' if checksum_valid else 'INVALID'}")
+    print(
+        "Backup: "
+        + (
+            f"valid revision {backup_revision}"
+            if backup_valid
+            else ("invalid" if backup_path.exists() else "not available yet")
+        )
+    )
+    if not checksum_valid and backup_valid:
+        print("Recovery: run repair-state --from-backup --confirm RESTORE")
+
+
+def cmd_repair_state(args: argparse.Namespace) -> None:
+    if args.confirm != "RESTORE":
+        raise WorkflowError("State repair requires --confirm RESTORE.")
+    root = repository_root(args.root)
+    path = state_path(root, args.id)
+    backup_path = path.with_name("state.backup.yaml")
+    backup = load_data(backup_path)
+    verify_state_checksum(backup, backup_path)
+    validate_state(backup, backup_path)
+    try:
+        current_revision = int(load_data(path).get("revision", 0))
+    except (WorkflowError, ValueError, TypeError):
+        current_revision = int(backup.get("revision", 0))
+    restored = json.loads(json.dumps(backup))
+    restored["revision"] = max(current_revision, int(backup.get("revision", 0))) + 1
+    add_history(restored, "state_restored", f"Restored from {backup_path.name}")
+    restored["state_checksum"] = state_checksum(restored)
+    validate_state(restored, path)
+    save_data(path, restored)
+    print(f"Restored workflow state from {backup_path.name}")
+
+
 def cmd_overview(args: argparse.Namespace) -> None:
     root = repository_root(args.root)
     _, state = load_state(root, args.id)
@@ -2025,13 +2131,165 @@ def cmd_approve_scope_change(args: argparse.Namespace) -> None:
 
 
 def require_current_source(root: Path, state: dict[str, Any]) -> dict[str, Any]:
-    current = current_source_fingerprint(root)
     source = state.get("source_revision", {})
+    current = current_source_fingerprint(root, tuple(source.get("scope_paths", [])))
     if source.get("source_tree_sha256") != current["source_tree_sha256"]:
         raise WorkflowError("Record the current source revision before this evidence.")
     if current["dirty_paths"]:
         raise WorkflowError("Source tree has uncommitted changes: " + ",".join(current["dirty_paths"]))
     return current
+
+
+def cmd_submit_verification(args: argparse.Namespace) -> None:
+    """Atomically register a strict source binding, AC verdicts, and journey evidence."""
+    root = repository_root(args.root)
+    path, state = load_state(root, args.id)
+    if state["workflow"]["mode"] != "strict" or state["workflow"]["current_stage"] != "verification":
+        raise WorkflowError("Verification bundles can only be submitted during strict verification.")
+    manifest_path, manifest_relative = repository_evidence_path(root, args.manifest)
+    manifest = load_data(manifest_path)
+    source_spec = manifest.get("source")
+    journey_spec = manifest.get("journey")
+    criteria_spec = manifest.get("criteria")
+    if not isinstance(source_spec, dict) or not isinstance(journey_spec, dict):
+        raise WorkflowError("Verification manifest requires source and journey mappings.")
+    if not isinstance(criteria_spec, list):
+        raise WorkflowError("Verification manifest requires a criteria list.")
+
+    scope_paths = tuple(str(item) for item in source_spec.get("paths", []) if str(item).strip())
+    current = current_source_fingerprint(root, scope_paths)
+    if current["dirty_paths"]:
+        raise WorkflowError(
+            "Commit the scoped source under verification first: "
+            + ",".join(current["dirty_paths"])
+        )
+    source_evidence, source_relative, source_hash = indexed_document(
+        root, str(source_spec.get("evidence", ""))
+    )
+    del source_evidence
+    build_command = str(source_spec.get("build_command", "")).strip()
+    test_command = str(source_spec.get("test_command", "")).strip()
+    if not build_command or not test_command:
+        raise WorkflowError("Verification manifest source requires build_command and test_command.")
+
+    expected_criteria = set(state.get("acceptance_criteria", {}))
+    pending_verdicts: dict[str, dict[str, Any]] = {}
+    for item in criteria_spec:
+        if not isinstance(item, dict):
+            raise WorkflowError("Each verification criterion must be a mapping.")
+        criterion_id = str(item.get("id", ""))
+        verdict = str(item.get("verdict", ""))
+        if criterion_id not in expected_criteria:
+            raise WorkflowError(f"Unknown acceptance criterion: {criterion_id}")
+        if criterion_id in pending_verdicts:
+            raise WorkflowError(f"Duplicate acceptance criterion: {criterion_id}")
+        if verdict not in {"pass", "fail", "blocked", "not_applicable"}:
+            raise WorkflowError(f"Invalid verdict for {criterion_id}: {verdict}")
+        scope_change_id = str(item.get("scope_change_id", "")) or None
+        if verdict == "not_applicable" and not scope_change_authorizes(
+            root, state, scope_change_id or "", criterion_id
+        ):
+            raise WorkflowError(
+                f"not_applicable requires a user-approved scope change: {criterion_id}"
+            )
+        evidence, relative, evidence_hash = indexed_document(
+            root, str(item.get("evidence", ""))
+        )
+        evidence_text = evidence.read_text(encoding="utf-8").lower().replace("_", " ")
+        if criterion_id.lower() not in evidence_text or verdict.replace("_", " ") not in evidence_text:
+            raise WorkflowError(
+                f"Criterion evidence must identify {criterion_id} and {verdict}."
+            )
+        pending_verdicts[criterion_id] = {
+            "verdict": verdict,
+            "verified_by": "testing",
+            "scope_change_id": scope_change_id,
+            "evidence": str(relative),
+            "evidence_sha256": evidence_hash,
+            "source_tree_sha256": current["source_tree_sha256"],
+            "recorded_at": now(),
+        }
+    missing_criteria = sorted(expected_criteria - set(pending_verdicts))
+    if missing_criteria:
+        raise WorkflowError(
+            "Verification bundle is missing criteria: " + ",".join(missing_criteria)
+        )
+
+    profile = str(journey_spec.get("profile", "web"))
+    if profile not in JOURNEY_PROFILES:
+        raise WorkflowError(f"Unknown journey profile: {profile}")
+    checks = journey_spec.get("checks")
+    if not isinstance(checks, dict):
+        raise WorkflowError("Verification manifest journey requires a checks mapping.")
+    normalized_checks = {str(key): str(value) for key, value in checks.items()}
+    unknown_checks = sorted(set(normalized_checks) - set(JOURNEY_CHECKS))
+    missing_checks = sorted(set(JOURNEY_PROFILES[profile]) - set(normalized_checks))
+    invalid_checks = sorted(
+        check
+        for check, result in normalized_checks.items()
+        if result not in JOURNEY_RESULTS
+    )
+    if unknown_checks or missing_checks or invalid_checks:
+        raise WorkflowError(
+            "Journey checks are invalid; "
+            f"missing={','.join(missing_checks) or 'none'} "
+            f"unknown={','.join(unknown_checks) or 'none'} "
+            f"invalid_results={','.join(invalid_checks) or 'none'}"
+        )
+    journey_evidence, journey_relative, journey_hash = indexed_document(
+        root, str(journey_spec.get("evidence", ""))
+    )
+    journey_text = journey_evidence.read_text(encoding="utf-8").lower()
+    absent = [check for check in normalized_checks if check not in journey_text]
+    if absent:
+        raise WorkflowError("Journey report is missing check sections: " + ",".join(absent))
+
+    timestamp = now()
+    state["source_revision"] = {
+        **current,
+        "evidence": str(source_relative),
+        "evidence_sha256": source_hash,
+        "build_command": build_command,
+        "test_command": test_command,
+        "recorded_at": timestamp,
+    }
+    state["criterion_verdicts"] = pending_verdicts
+    state["core_outcomes"] = {}
+    state["journey_validation"] = {
+        "checks": normalized_checks,
+        "profile": profile,
+        "verified_by": "testing",
+        "evidence": str(journey_relative),
+        "evidence_sha256": journey_hash,
+        "source_tree_sha256": current["source_tree_sha256"],
+        "recorded_at": timestamp,
+    }
+    state["artifacts"]["journey_report"] = {
+        "path": str(journey_relative),
+        "status": "ready",
+        "evidence_sha256": journey_hash,
+        "updated_at": timestamp,
+        "notes": f"Registered atomically from {manifest_relative}.",
+    }
+    add_history(
+        state,
+        "verification_bundle_submitted",
+        f"{manifest_relative}:{current['git_head']}:{profile}",
+    )
+    save_state(path, state)
+    non_passing = [
+        criterion_id
+        for criterion_id, verdict in pending_verdicts.items()
+        if verdict["verdict"] != "pass"
+    ] + [
+        check
+        for check, result in normalized_checks.items()
+        if check in JOURNEY_PROFILES[profile] and result != "pass"
+    ]
+    print(
+        "Recorded atomic strict verification bundle"
+        + (f"; gate remains blocked by: {','.join(non_passing)}" if non_passing else "")
+    )
 
 
 def cmd_record_source_revision(args: argparse.Namespace) -> None:
@@ -2040,7 +2298,7 @@ def cmd_record_source_revision(args: argparse.Namespace) -> None:
     if state["workflow"]["mode"] != "strict" or state["workflow"]["current_stage"] != "verification":
         raise WorkflowError("Source revision binding is required only during strict verification.")
     absolute, relative, evidence_hash = indexed_document(root, args.evidence)
-    current = current_source_fingerprint(root)
+    current = current_source_fingerprint(root, tuple(args.source_path or ()))
     if current["dirty_paths"]:
         raise WorkflowError(
             "Commit the exact source under verification first: " + ",".join(current["dirty_paths"])
@@ -2098,21 +2356,28 @@ def cmd_record_user_journey(args: argparse.Namespace) -> None:
         raise WorkflowError("Final user-journey validation belongs to verification.")
     current = require_current_source(root, state)
     checks = parse_key_value(args.check, "check")
+    required_checks = JOURNEY_PROFILES[args.profile]
     unknown = sorted(set(checks) - set(JOURNEY_CHECKS))
-    missing = sorted(set(JOURNEY_CHECKS) - set(checks))
-    if unknown or missing or any(value != "pass" for value in checks.values()):
+    missing = sorted(set(required_checks) - set(checks))
+    invalid_results = sorted(
+        check for check, result in checks.items() if result not in JOURNEY_RESULTS
+    )
+    if unknown or missing or invalid_results:
         raise WorkflowError(
-            "Every required journey check must be recorded as pass; "
-            f"missing={','.join(missing) or 'none'} unknown={','.join(unknown) or 'none'}"
+            "Journey checks are invalid; "
+            f"missing={','.join(missing) or 'none'} "
+            f"unknown={','.join(unknown) or 'none'} "
+            f"invalid_results={','.join(invalid_results) or 'none'}"
         )
     absolute, relative, evidence_hash = indexed_document(root, args.evidence)
     text = absolute.read_text(encoding="utf-8").lower()
-    absent = [check for check in JOURNEY_CHECKS if check not in text]
+    absent = [check for check in checks if check not in text]
     if absent:
         raise WorkflowError("Journey report is missing check sections: " + ",".join(absent))
     timestamp = now()
     state["journey_validation"] = {
         "checks": checks,
+        "profile": args.profile,
         "verified_by": "testing",
         "evidence": str(relative),
         "evidence_sha256": evidence_hash,
@@ -2128,7 +2393,11 @@ def cmd_record_user_journey(args: argparse.Namespace) -> None:
     }
     add_history(state, "user_journey_verified", current["source_tree_sha256"])
     save_state(path, state)
-    print("Recorded complete final user-journey validation")
+    non_passing = [check for check, result in checks.items() if result != "pass"]
+    print(
+        "Recorded final user-journey evidence"
+        + (f"; non-passing checks: {','.join(non_passing)}" if non_passing else "")
+    )
 
 
 def cmd_record_core_outcome(args: argparse.Namespace) -> None:
@@ -2806,6 +3075,21 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--json", action="store_true")
     status.set_defaults(func=cmd_status)
 
+    audit = subparsers.add_parser(
+        "audit-state",
+        help="Diagnose state integrity even when normal status loading is blocked",
+    )
+    audit.add_argument("--json", action="store_true")
+    audit.set_defaults(func=cmd_audit_state)
+
+    repair = subparsers.add_parser(
+        "repair-state",
+        help="Restore the last valid automatic state backup",
+    )
+    repair.add_argument("--from-backup", action="store_true", required=True)
+    repair.add_argument("--confirm", required=True)
+    repair.set_defaults(func=cmd_repair_state)
+
     overview = subparsers.add_parser("overview", help="Show a concise progress report")
     overview.add_argument("--json", action="store_true")
     overview.set_defaults(func=cmd_overview)
@@ -2947,6 +3231,13 @@ def build_parser() -> argparse.ArgumentParser:
     scope_change.add_argument("--evidence", required=True)
     scope_change.set_defaults(func=cmd_approve_scope_change)
 
+    verification_bundle = subparsers.add_parser(
+        "submit-verification",
+        help="Atomically register strict source, criterion, and journey evidence from one manifest",
+    )
+    verification_bundle.add_argument("--manifest", required=True)
+    verification_bundle.set_defaults(func=cmd_submit_verification)
+
     source_revision = subparsers.add_parser(
         "record-source-revision",
         help="Bind strict verification to a committed source tree",
@@ -2954,6 +3245,11 @@ def build_parser() -> argparse.ArgumentParser:
     source_revision.add_argument("--evidence", required=True)
     source_revision.add_argument("--build-command", required=True)
     source_revision.add_argument("--test-command", required=True)
+    source_revision.add_argument(
+        "--source-path",
+        action="append",
+        help="Delivery path or module to bind; repeat as needed. Defaults to the whole Git tree.",
+    )
     source_revision.set_defaults(func=cmd_record_source_revision)
 
     criterion_verdict = subparsers.add_parser(
@@ -2972,7 +3268,13 @@ def build_parser() -> argparse.ArgumentParser:
         "record-user-journey",
         help="Record semantic end-to-end testing against the final source revision",
     )
-    journey.add_argument("--check", action="append", required=True, help="check_name=pass")
+    journey.add_argument("--profile", choices=tuple(JOURNEY_PROFILES), default="web")
+    journey.add_argument(
+        "--check",
+        action="append",
+        required=True,
+        help="check_name=pass|fail|blocked|not_applicable",
+    )
     journey.add_argument("--evidence", required=True)
     journey.set_defaults(func=cmd_record_user_journey)
 
@@ -3002,7 +3304,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     delivery = subparsers.add_parser(
         "record-delivery-confirmation",
-        help="Record explicit user approval or requested changes for a verified micro delivery",
+        help="Record explicit user approval or requested changes for a verified delivery",
     )
     delivery.add_argument(
         "--verdict", choices=("approve", "request_changes", "reject"), required=True
@@ -3087,6 +3389,7 @@ def main() -> int:
         mutating = {
             "init",
             "start",
+            "repair-state",
             "assess-risk",
             "report-risk",
             "resolve-risk",
@@ -3097,6 +3400,7 @@ def main() -> int:
             "record-core-goals",
             "register-acceptance-criteria",
             "approve-scope-change",
+            "submit-verification",
             "record-source-revision",
             "record-criterion-verdict",
             "record-user-journey",

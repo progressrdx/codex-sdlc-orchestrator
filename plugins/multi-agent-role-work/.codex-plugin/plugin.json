@@ -1,7 +1,7 @@
 {
   "name": "multi-agent-role-work",
-  "version": "1.1.0+codex.20260731002009",
-  "description": "A reliable multi-role SDLC workflow for Codex with review gates, human checkpoints, atomic state, and meeting records.",
+  "version": "1.2.0+codex.20260731020224",
+  "description": "A risk-adaptive multi-role SDLC workflow with atomic verification, user delivery approval, recoverable state, and meeting records.",
   "author": {
     "name": "progressrdx",
     "url": "https://github.com/progressrdx"
@@ -19,7 +19,7 @@
   "interface": {
     "displayName": "Multi-Role SDLC",
     "shortDescription": "Risk-adaptive product, engineering, and testing workflow.",
-    "longDescription": "Run a formal software delivery workflow in any project without copying project files. The orchestrator performs evidence-backed requirement and risk triage, selects the lowest safe micro, quick, standard, or strict flow, locks user-confirmed core outcomes, prevents silent scope reduction, binds strict verification to a committed source revision, requires semantic final-user-journey checks, coordinates independent product, engineering, and testing work, and preserves checksummed state, human authorization checkpoints, and structured meeting records.",
+    "longDescription": "Run a formal software delivery workflow in any project without copying project files. The orchestrator performs evidence-backed requirement and risk triage, selects the lowest safe micro, quick, standard, or strict flow, locks user-confirmed core outcomes, prevents silent scope reduction, atomically binds strict verification to a scoped committed source revision, requires profile-appropriate semantic final-user-journey checks, coordinates independent product, engineering, and testing work, requires final user delivery approval in every mode, and preserves recoverable checksummed state, human authorization checkpoints, and structured meeting records.",
     "developerName": "progressrdx",
     "category": "Productivity",
     "capabilities": [
@@ -29,7 +29,9 @@
       "Risk-based mode escalation",
       "Explicit user delivery confirmation",
       "Core-goal and scope-change control",
-      "Source-bound final journey verification"
+      "Atomic scoped-source verification",
+      "Profile-based final journey checks",
+      "State audit and backup recovery"
     ],
     "defaultPrompt": [
       "\u542f\u52a8\u7814\u53d1\u6d41\u7a0b\uff1a\u63cf\u8ff0\u4f60\u7684\u9700\u6c42\uff0c\u6211\u4f1a\u5148\u68c0\u67e5\u9700\u6c42\u7f3a\u53e3\u548c\u98ce\u9669\uff0c\u518d\u63a8\u8350\u5408\u9002\u6d41\u7a0b\u3002",

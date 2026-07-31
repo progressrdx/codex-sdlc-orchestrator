@@ -24,7 +24,7 @@ Require a human checkpoint for destructive data changes, permission changes, pro
 
 Read [workflow-contract.md](references/workflow-contract.md) before the first state transition in a workflow.
 Use [meeting-notes-template.md](assets/meeting-notes-template.md) for every cross-role communication summary.
-In strict mode, use [core-goals-template.md](assets/core-goals-template.md) at requirement confirmation and [final-user-journey-template.md](assets/final-user-journey-template.md) during verification.
+In strict mode, use [core-goals-template.md](assets/core-goals-template.md) at requirement confirmation, [final-user-journey-template.md](assets/final-user-journey-template.md) during verification, and [verification-bundle-template.yaml](assets/verification-bundle-template.yaml) to submit the source binding, all criterion verdicts, and the journey result atomically.
 
 ## Route by stage
 
@@ -41,9 +41,9 @@ In strict mode, use [core-goals-template.md](assets/core-goals-template.md) at r
 | `prototype` | Spawn a `developer` task with `$sdlc-engineering` to create the smallest inspectable prototype, MVP, screenshot, or demo. |
 | `user_feedback` | Present the prototype to the user; use `record-user-feedback`. Approval unlocks implementation; `request_changes` or `reject` preserves the feedback and rewinds to the selected affected stage. |
 | `implementation` | Spawn a `developer` task with `$sdlc-engineering`. |
-| `verification` | Spawn a `tester` task with `$sdlc-testing`; send confirmed defects to a `developer` task. In strict mode bind the committed source, record every criterion verdict, and record the complete final user journey. |
+| `verification` | Spawn a `tester` task with `$sdlc-testing`; send confirmed defects to a `developer` task. In strict mode prefer one `submit-verification` bundle that binds the scoped committed source, every criterion verdict, and the profile-appropriate final journey. |
 | `acceptance` | Spawn all three role tasks with `$sdlc-review`; product checks each confirmed core outcome, tester checks current-source journey evidence, and developer answers technical findings. |
-| `delivery_confirmation` | For `micro`, show the user the verified result, implementation summary, and test evidence; record explicit approval or requested changes with `record-delivery-confirmation`. |
+| `delivery_confirmation` | In every mode, show the user the working result, implementation summary, and test evidence; record explicit approval or requested changes with `record-delivery-confirmation`. |
 
 Use a role-named subagent task and include the role boundary plus the explicit bundled `$sdlc-*` Skill in its prompt. Project custom agents may be used when available, but the workflow must never depend on them. Never omit the Skill and rely on the task name alone.
 
@@ -62,7 +62,7 @@ Only route stages present in the state's `flow_stages`. In `micro`, assign imple
 - In strict mode, preserve the user's essential outcomes as `GOAL-*`. Do not advance without `record-core-goals`, and never let later roles redefine those goals as mock-only implementation boundaries.
 - Register strict Must criteria from the current PRD. A missing verdict, `fail`, or `blocked` blocks acceptance. `not_applicable`, deferral, removal, or replacement is valid only through `approve-scope-change` with separate explicit user evidence naming the affected IDs.
 - When `user_feedback` is enabled, do not advance until the user has inspected a prototype, MVP, screenshot, demo, or equivalent preview and explicitly approves the direction through `record-user-feedback --verdict approve`.
-- In `micro`, do not complete immediately after verification. Show the result and verification evidence to the user and require `record-delivery-confirmation --verdict approve`; requested changes rewind to implementation by default.
+- No mode completes on AI review alone. Show the verified result and evidence to the user and require `record-delivery-confirmation --verdict approve`; requested changes rewind to implementation by default.
 - If the user rejects the preview, preserve the feedback and reopen to the earliest affected stage instead of continuing toward final verification.
 - Convert every blocking finding into a tracked issue; resolve it only with owner-matched evidence.
 - At acceptance, an open `major` issue also blocks delivery. Resolve it, or record an evidenced `accepted_risk` or `deferred` disposition with the named human authority; deferred issues require a due date.
@@ -70,9 +70,10 @@ Only route stages present in the state's `flow_stages`. In `micro`, assign imple
 - Record gate meetings only after collecting independent role verdicts. The PRD, readiness, and acceptance gates cannot advance without current meeting notes covering every required role.
 - When an indexed artifact changes, the state tool automatically rewinds to its earliest affected stage and supersedes downstream evidence. Treat the returned `change_control_required` event as a required cross-role change-control discussion before rebuilding downstream artifacts.
 - Evidence is live: if an indexed artifact, review, meeting note, or human approval file changes after recording, its hash no longer matches and the gate cannot advance until it is recorded and reviewed again.
-- Strict verification is source-live: call `record-source-revision` only for a committed source tree, then record tester criterion verdicts and all eight final-journey checks against that fingerprint. Any source edit makes them stale and forces re-verification.
-- The final journey must test actual semantics and actions: launch, core outcomes, displayed content, interactions, every external link, UI truncation/overflow/placeholders, removal of debug/mock controls, and the real source of truth. A build, screenshot, source inspection, or prototype approval is insufficient.
-- Never edit `state.yaml` directly. Schema 7 state includes an integrity checksum and unsupported manual edits fail closed.
+- Strict verification is source-live and scope-aware: prefer `submit-verification` with a reviewed list of repository-relative source paths. The state tool binds Git object metadata once per gate evaluation; a relevant scoped edit makes the evidence stale. Use an empty path list only when the whole repository is the real delivery boundary.
+- Select the final-journey profile that matches the deliverable (`web`, `desktop`, `api`, `cli`, `library`, or `data`). Record `fail`, `blocked`, or `not_applicable` truthfully; required non-pass results remain stored and block advancement instead of forcing a false all-pass report.
+- The final journey must test actual semantics and actions appropriate to the profile. A build, screenshot, source inspection, or prototype approval is insufficient.
+- Never edit `state.yaml` directly. Schema 8 state includes an integrity checksum and unsupported manual edits fail closed. Use `audit-state`; when a prior valid automatic backup exists, use the explicit `repair-state --from-backup --confirm RESTORE` recovery path.
 - Record design coordination as `design_sync`, implementation defects as `defect_triage`, requirement changes as `change_control`, and other cross-role discussions as `ad_hoc`.
 - Never infer `approve` from silence or from an artifact's existence.
 - Never let the implementer substitute for independent test approval.
@@ -109,9 +110,10 @@ workflow.py approve-scope-change --item GOAL-001 --disposition deferred --approv
 workflow.py record-artifact --name prototype --path docs/requirements/.../07-prototype.md
 workflow.py record-user-feedback --verdict approve --summary "..." --evidence docs/requirements/.../07-user-feedback.md
 workflow.py record-user-feedback --verdict request_changes --affected-stage design --summary "..." --evidence docs/requirements/.../07-user-feedback.md
-workflow.py record-source-revision --build-command "..." --test-command "..." --evidence docs/requirements/.../08-source-verification.md
+workflow.py submit-verification --manifest docs/requirements/.../08-verification-bundle.yaml
+workflow.py record-source-revision --source-path src --source-path tests --build-command "..." --test-command "..." --evidence docs/requirements/.../08-source-verification.md
 workflow.py record-criterion-verdict --criterion-id AC-001 --verdict pass --evidence docs/requirements/.../tests/AC-001.md
-workflow.py record-user-journey --check launch=pass --check core_outcomes=pass --check content_semantics=pass --check interactions=pass --check external_links=pass --check ui_quality=pass --check release_hygiene=pass --check source_truth=pass --evidence docs/requirements/.../08-final-journey.md
+workflow.py record-user-journey --profile api --check launch=pass --check core_outcomes=pass --check content_semantics=pass --check interactions=pass --check external_links=blocked --check release_hygiene=pass --check source_truth=pass --evidence docs/requirements/.../08-final-journey.md
 workflow.py record-core-outcome --goal-id GOAL-001 --verdict satisfied --evidence docs/requirements/.../09-goal-outcomes.md
 workflow.py record-delivery-confirmation --verdict approve --summary "..." --evidence docs/requirements/.../09-delivery-confirmation.md
 workflow.py add-issue --source testing --severity blocker --summary "..."
@@ -120,7 +122,11 @@ workflow.py disposition-issue --issue-id ISSUE-002 --disposition accepted_risk -
 workflow.py decide --gate prd_review --role testing --verdict approve --evidence docs/requirements/.../reviews/prd-testing.md
 workflow.py record-meeting --type prd_review --title "PRD review" --participants product,engineering,testing --outcome approved --path docs/requirements/.../meetings/MTG-001-prd-review.md
 workflow.py record-human-approval --gate acceptance --approved-by "release-owner" --evidence docs/requirements/.../approvals/acceptance.md
+workflow.py audit-state
+workflow.py repair-state --from-backup --confirm RESTORE
 workflow.py advance
 ```
+
+Treat the granular source, criterion, and journey commands as advanced recovery tools. The normal strict route is the single validation bundle so the coordinator cannot partially register a verification run.
 
 Keep meeting files under `docs/requirements/<workflow-id>/meetings/` and include the returned `MTG-*` ID in later issue, change, or delivery summaries when relevant.

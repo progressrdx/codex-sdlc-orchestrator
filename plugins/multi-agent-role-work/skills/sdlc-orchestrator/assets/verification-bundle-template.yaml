@@ -1,0 +1,38 @@
+# Strict verification bundle
+#
+# Submit once with:
+# workflow.py submit-verification --manifest <this-file>
+#
+# Source paths are repository-relative directories or files that define the
+# delivery under test. Include every production and test path whose change can
+# affect the result. An empty list binds the whole repository.
+source:
+  evidence: docs/requirements/<workflow-id>/08-source-verification.md
+  build_command: "<exact command that was executed>"
+  test_command: "<exact command that was executed>"
+  paths:
+    - src/
+    - tests/
+
+criteria:
+  - id: AC-001
+    verdict: pass
+    evidence: docs/requirements/<workflow-id>/tests/AC-001.md
+  # A not_applicable verdict also requires:
+  # scope_change_id: SC-001
+
+# Profiles: web, desktop, api, cli, library, data.
+# Use pass, fail, blocked, or not_applicable truthfully. The bundle is recorded
+# even when a check is not passing, but the verification gate remains blocked.
+journey:
+  profile: web
+  evidence: docs/requirements/<workflow-id>/08-final-journey.md
+  checks:
+    launch: pass
+    core_outcomes: pass
+    content_semantics: pass
+    interactions: pass
+    external_links: pass
+    ui_quality: pass
+    release_hygiene: pass
+    source_truth: pass

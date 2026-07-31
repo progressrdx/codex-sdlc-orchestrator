@@ -70,18 +70,30 @@ The default `standard` flow is:
 intake → scope_check → clarification → requirement_confirmation
        → prd → prd_review → design → readiness_review
        → prototype → user_feedback
-       → implementation → verification → acceptance → completed
+       → implementation → verification → acceptance
+       → delivery_confirmation → completed
 ```
 
-- `micro` is the tracked path for explicit, localized, low-risk work: `intake → scope_check → implementation → verification → completed`.
+- `micro` is the tracked path for explicit, localized, low-risk work: `intake → scope_check → implementation → verification → delivery_confirmation → completed`.
 - `quick` skips the full PRD stage. Clarification, requirement confirmation, prototype preview, and user feedback are enabled only when scope, ambiguity, or user-visible judgment requires them.
-- `strict` additionally locks user-confirmed `GOAL-*` outcomes, registers Must `AC-*` criteria, requires explicit database-design and release-plan artifacts, binds verification to a committed source revision, executes a semantic final-user journey, and requires human approval at readiness and acceptance.
+- `strict` additionally locks user-confirmed `GOAL-*` outcomes, registers Must `AC-*` criteria, requires explicit database-design and release-plan artifacts, atomically binds verification to a scoped committed source revision, executes a profile-appropriate semantic final-user journey, and requires human approval at readiness and acceptance.
+
+Every concrete mode ends with an explicit user delivery confirmation. Product, engineering, and testing approval cannot complete the workflow on the user's behalf.
 
 Natural-language starts use temporary `auto` mode. During `scope_check`, the coordinator must explicitly check actors/permissions, goals/scope, business rules/states, data/API effects, failures/edges, compatibility/rollout, subjective choices, and acceptance/verification. It records scope, exclusions, unresolved gaps, and risk flags, then recommends `micro`, `quick`, `standard`, or `strict`. API/data changes, cross-module behavior, security/privacy, migrations, production actions, and irreversible work raise the minimum mode. An explicitly requested mode is never silently downgraded.
 
 The selected mode can grow with the work: `micro → quick → standard → strict`. When product, engineering, or testing reports a newly discovered risk, the state tool automatically recalculates the minimum safe mode. If the current mode is too weak, advancement stops and `overview` explains the risk and recommended upgrade. The mode changes only after explicit user approval; approval rewinds to `scope_check`, preserves the escalation record, and invalidates affected downstream evidence. A strict escalation automatically enables human approval at readiness and acceptance.
 
-Strict mode prevents a team from silently replacing a confirmed live outcome with a mock-only MVP. Removing, deferring, replacing, or marking a core goal or Must criterion not applicable requires separate user-approved scope-change evidence. Acceptance is tied to the exact source tree tested; later code edits invalidate criterion verdicts and the final journey. The journey must exercise launch, core outcomes, semantic content, interactions, external links, UI quality, release hygiene, and the real source of truth.
+Strict mode prevents a team from silently replacing a confirmed live outcome with a mock-only MVP. Removing, deferring, replacing, or marking a core goal or Must criterion not applicable requires separate user-approved scope-change evidence. Acceptance is tied to the scoped source tested; later relevant code edits invalidate criterion verdicts and the final journey, while unrelated repository changes do not. Journey profiles support web, desktop, API, CLI, library, and data deliverables. A tester can record `fail`, `blocked`, or `not_applicable` truthfully; required non-pass results remain visible and block delivery.
+
+Strict verification uses one manifest instead of a long chain of state calls:
+
+```bash
+workflow.py submit-verification \
+  --manifest docs/requirements/<requirement-id>/08-verification-bundle.yaml
+```
+
+The manifest contains the reviewed source paths, actual build and test commands, every `AC-*` verdict, and the final-journey profile/checks. Granular recording commands remain available for recovery.
 
 Enabled PRD review, readiness review, and acceptance gates require independent role verdicts plus current meeting notes covering all required roles. Unresolved blockers prevent the workflow from advancing. When preview is enabled, explicit user approval is required before implementation. A user `request_changes` or `reject` verdict is preserved and automatically rewinds the workflow to the affected stage.
 
@@ -91,6 +103,7 @@ Workflow state uses:
 - A monotonic revision checked before every update.
 - Atomic file replacement with flushed data.
 - A repository-scoped cross-process writer lock.
+- A validated previous-state backup plus `audit-state` and explicit backup repair.
 - Live evidence hashes: changing an indexed artifact, review, meeting note, or human-approval file blocks further gate advancement until refreshed.
 - Automatic rollback to the earliest affected stage when an upstream artifact changes.
 - Required user confirmation and preview feedback whenever those gates are enabled by the selected flow.
@@ -100,6 +113,13 @@ Workflow state uses:
 - Formal major-issue disposition: acceptance blocks on open major findings unless a named authority records an evidenced risk acceptance or scheduled deferral.
 
 These are local consistency controls, not identity authentication or tamper-proof audit guarantees. See [SECURITY.md](SECURITY.md) and [THREAT_MODEL.md](THREAT_MODEL.md).
+
+If checksum or syntax corruption prevents normal commands, inspect and recover the last valid revision:
+
+```bash
+workflow.py audit-state
+workflow.py repair-state --from-backup --confirm RESTORE
+```
 
 ## Update or uninstall
 
