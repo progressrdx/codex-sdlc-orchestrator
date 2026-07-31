@@ -130,6 +130,22 @@ Workflow state uses:
 
 These are local consistency controls, not identity authentication or tamper-proof audit guarantees. See [SECURITY.md](SECURITY.md) and [THREAT_MODEL.md](THREAT_MODEL.md).
 
+## Implementation architecture
+
+The installed plugin keeps workflow behavior split by responsibility:
+
+| Module | Responsibility |
+|---|---|
+| `workflow.py` | Workflow rules, shared evidence validation, state transitions, delivery commands, and compatibility wrappers. |
+| `workflow_cli.py` | CLI parser definitions and the mutating-command registry. |
+| `state_store.py` | Checksums, atomic writes, backups, and cross-process locking. |
+| `risk_policy.py` | Deterministic risk flags, safe-mode calculation, and escalation policy. |
+| `risk_commands.py` | Scope assessment, discovered-risk lifecycle, escalation acceptance, and mode escalation commands. |
+| `review_commands.py` | Role verdicts, atomic gate-review bundles, meeting records, and human-approval binding. |
+| `source_policy.py` | Scope-aware Git source bindings and dirty-path detection. |
+
+The public command names and state schema remain stable across this split. The small wrappers in `workflow.py` preserve existing integrations while the implementation modules can be tested and maintained independently.
+
 If checksum or syntax corruption prevents normal commands, inspect and recover the last valid revision:
 
 ```bash
