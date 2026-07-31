@@ -1496,11 +1496,45 @@ class WorkflowToolTests(unittest.TestCase):
         other = self.root / "other-module" / "other.py"
         other.parent.mkdir()
         other.write_text("VALUE = 1\n", encoding="utf-8")
-        subprocess.run(["git", "-C", str(self.root), "add", str(other.relative_to(self.root))], check=True)
+        generated = self.root / "generated" / "cache.txt"
+        generated.parent.mkdir()
+        generated.write_text("cache-v1\n", encoding="utf-8")
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.root),
+                "add",
+                str(other.relative_to(self.root)),
+                str(generated.relative_to(self.root)),
+            ],
+            check=True,
+        )
         subprocess.run(["git", "-C", str(self.root), "commit", "-qm", "other module"], check=True)
 
         verified = workflow_module.current_source_fingerprint(self.root)
         self.assertEqual([], verified["dirty_paths"])
+        ignored_before = workflow_module.current_source_fingerprint(
+            self.root, (), ("generated",)
+        )
+        generated.write_text("cache-v2\n", encoding="utf-8")
+        ignored_dirty = workflow_module.current_source_fingerprint(
+            self.root, (), ("generated",)
+        )
+        self.assertEqual([], ignored_dirty["dirty_paths"])
+        subprocess.run(
+            ["git", "-C", str(self.root), "add", str(generated.relative_to(self.root))],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(self.root), "commit", "-qm", "generated update"], check=True)
+        ignored_after = workflow_module.current_source_fingerprint(
+            self.root, (), ("generated",)
+        )
+        self.assertEqual(
+            ignored_before["source_tree_sha256"],
+            ignored_after["source_tree_sha256"],
+        )
+        verified = workflow_module.current_source_fingerprint(self.root)
         source.write_text("print('changed after verification')\n", encoding="utf-8")
         changed = workflow_module.current_source_fingerprint(self.root)
         self.assertIn("app.py", changed["dirty_paths"])
@@ -1619,6 +1653,7 @@ class WorkflowToolTests(unittest.TestCase):
                         "build_command": "python -m build",
                         "test_command": "python -m unittest",
                         "paths": ["app.py"],
+                        "ignore_paths": ["generated"],
                     },
                     "criteria": [
                         {
@@ -1654,6 +1689,7 @@ class WorkflowToolTests(unittest.TestCase):
         self.assertEqual("pass", after["criterion_verdicts"]["AC-001"]["verdict"])
         self.assertEqual("cli", after["journey_validation"]["profile"])
         self.assertEqual(["app.py"], after["source_revision"]["scope_paths"])
+        self.assertEqual(["generated"], after["source_revision"]["ignored_paths"])
 
     def test_submit_gate_review_registers_decisions_and_meeting_atomically(self) -> None:
         self.init("quick")

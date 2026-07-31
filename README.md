@@ -139,12 +139,29 @@ The installed plugin keeps workflow behavior split by responsibility:
 | `workflow.py` | Workflow rules, shared evidence validation, state transitions, delivery commands, and compatibility wrappers. |
 | `workflow_cli.py` | CLI parser definitions and the mutating-command registry. |
 | `state_store.py` | Checksums, atomic writes, backups, and cross-process locking. |
+| `command_runtime.py` | Shared compatibility binding between the facade and command modules. |
 | `risk_policy.py` | Deterministic risk flags, safe-mode calculation, and escalation policy. |
 | `risk_commands.py` | Scope assessment, discovered-risk lifecycle, escalation acceptance, and mode escalation commands. |
 | `review_commands.py` | Role verdicts, atomic gate-review bundles, meeting records, and human-approval binding. |
+| `assurance_commands.py` | Protected goals/criteria, scope changes, source binding, criterion verdicts, and user-journey verification. |
+| `delivery_commands.py` | Preview feedback, final delivery confirmation, and issue resolution/disposition. |
 | `source_policy.py` | Scope-aware Git source bindings and dirty-path detection. |
 
 The public command names and state schema remain stable across this split. The small wrappers in `workflow.py` preserve existing integrations while the implementation modules can be tested and maintained independently.
+
+## Assurance coverage and limits
+
+| Concern | Current behavior | Boundary |
+|---|---|---|
+| Coordinator call volume | Gate reviews and strict verification use atomic bundle commands. | Granular commands remain available for recovery. |
+| Source freshness | Git object metadata is evaluated once per gate, can be limited to reviewed delivery paths, and records configurable generated/vendor exclusions. | An empty scope binds every tracked path except explicit/default workflow exclusions. |
+| Role independence | Gate roles require distinct task/session references and evidence files. | References provide traceability, not cryptographic identity. |
+| User satisfaction | Every concrete mode ends with explicit user delivery confirmation. | The tool cannot infer approval from silence or authenticate the human. |
+| Final journey | Deliverable-specific profiles accept truthful pass, fail, blocked, and not-applicable results. | Required non-pass results block advancement. |
+| Scope changes | Conservative rewind is the default; evidenced user-approved changes can select a safe later impact stage. | `AC-*` changes cannot skip verification and `GOAL-*` changes cannot skip acceptance. |
+| State corruption | Checksummed atomic state keeps a validated backup with audit and explicit repair commands. | It does not solve Git merge conflicts or malicious host access. |
+| Regression protection | The suite covers migrations, corruption recovery, escalation expiry, scoped source changes, atomic bundles, and local rewinds. | Repository-specific product behavior still needs project tests. |
+| Documentation/versioning | README, Skill contract, manifest version, installed cache version, and remote source are updated together. | A new Codex task is required to load an updated installed Skill. |
 
 If checksum or syntax corruption prevents normal commands, inspect and recover the last valid revision:
 

@@ -280,6 +280,11 @@ def build_parser(api: Any) -> argparse.ArgumentParser:
         action="append",
         help="Delivery path or module to bind; repeat as needed. Defaults to the whole Git tree.",
     )
+    source_revision.add_argument(
+        "--ignore-source-path",
+        action="append",
+        help="Tracked generated/vendor path to exclude from the binding; repeat as needed.",
+    )
     source_revision.set_defaults(func=cmd_record_source_revision)
 
     criterion_verdict = subparsers.add_parser(

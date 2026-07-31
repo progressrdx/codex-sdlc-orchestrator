@@ -43,6 +43,28 @@ class PluginPackageTests(unittest.TestCase):
         }
         self.assertEqual(required, found)
 
+    def test_workflow_command_architecture_stays_modular(self) -> None:
+        scripts = PLUGIN / "skills" / "sdlc-orchestrator" / "scripts"
+        required_modules = {
+            "workflow.py",
+            "workflow_cli.py",
+            "state_store.py",
+            "command_runtime.py",
+            "risk_policy.py",
+            "risk_commands.py",
+            "review_commands.py",
+            "assurance_commands.py",
+            "delivery_commands.py",
+            "source_policy.py",
+        }
+        self.assertTrue(required_modules.issubset({path.name for path in scripts.glob("*.py")}))
+        workflow_lines = (scripts / "workflow.py").read_text(encoding="utf-8").splitlines()
+        self.assertLess(
+            len(workflow_lines),
+            2000,
+            "workflow.py should remain a shared rules/facade module, not absorb command groups",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

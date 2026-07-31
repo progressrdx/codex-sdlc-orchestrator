@@ -1,7 +1,7 @@
 {
   "name": "multi-agent-role-work",
-  "version": "2.2.0+codex.20260731124430",
-  "description": "A modular risk-adaptive SDLC workflow with atomic gate reviews and verification, scoped change control, and recoverable state.",
+  "version": "2.3.0+codex.20260731132413",
+  "description": "An acceptance-ready modular SDLC workflow with atomic reviews, scoped verification and change control, explicit user delivery approval, and recoverable state.",
   "author": {
     "name": "progressrdx",
     "url": "https://github.com/progressrdx"
@@ -35,7 +35,8 @@
       "Impact-scoped change control",
       "Traceable independent role reviews",
       "Atomic gate-review bundles",
-      "Modular workflow command architecture"
+      "Modular workflow command architecture",
+      "Documented assurance boundaries"
     ],
     "defaultPrompt": [
       "\u542f\u52a8\u7814\u53d1\u6d41\u7a0b\uff1a\u63cf\u8ff0\u4f60\u7684\u9700\u6c42\uff0c\u6211\u4f1a\u5148\u68c0\u67e5\u9700\u6c42\u7f3a\u53e3\u548c\u98ce\u9669\uff0c\u518d\u63a8\u8350\u5408\u9002\u6d41\u7a0b\u3002",

@@ -4,16 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-
-def _bind(api: Any) -> None:
-    for name in dir(api):
-        if not name.startswith("_") and name not in globals():
-            globals()[name] = getattr(api, name)
+from command_runtime import invoke as invoke_bound
 
 
 def invoke(name: str, api: Any, args: Any) -> Any:
-    _bind(api)
-    return globals()[name](args)
+    return invoke_bound(globals(), name, api, args)
 
 
 def gate_choice(value: str, default: bool) -> bool:

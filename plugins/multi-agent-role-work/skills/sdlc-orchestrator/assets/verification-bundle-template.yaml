@@ -13,6 +13,9 @@ source:
   paths:
     - src/
     - tests/
+  # Optional tracked generated/vendor paths that do not affect delivery behavior.
+  # The recorded state preserves this list for every freshness check.
+  ignore_paths: []
 
 criteria:
   - id: AC-001
