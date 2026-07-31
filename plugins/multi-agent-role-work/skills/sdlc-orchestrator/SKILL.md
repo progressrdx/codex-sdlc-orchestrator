@@ -24,6 +24,7 @@ Require a human checkpoint for destructive data changes, permission changes, pro
 
 Read [workflow-contract.md](references/workflow-contract.md) before the first state transition in a workflow.
 Use [meeting-notes-template.md](assets/meeting-notes-template.md) for every cross-role communication summary.
+Use [gate-review-bundle-template.yaml](assets/gate-review-bundle-template.yaml) for PRD, readiness, and acceptance gate reviews.
 In strict mode, use [core-goals-template.md](assets/core-goals-template.md) at requirement confirmation, [final-user-journey-template.md](assets/final-user-journey-template.md) during verification, and [verification-bundle-template.yaml](assets/verification-bundle-template.yaml) to submit the source binding, all criterion verdicts, and the journey result atomically.
 
 ## Route by stage
@@ -35,14 +36,14 @@ In strict mode, use [core-goals-template.md](assets/core-goals-template.md) at r
 | `clarification` | Spawn a `product_manager` task with `$sdlc-product`; require missing-point analysis and focused user questions before recording `clarification_questions`. |
 | `requirement_confirmation` | Present the synthesized understanding and unresolved choices to the user; record `requirement_confirmation` only after explicit user confirmation. In strict mode, lock the confirmed `GOAL-*` outcomes with `record-core-goals`. |
 | `prd` | Spawn a `product_manager` task with `$sdlc-product`. In strict mode register every Must `AC-*` from the current PRD. |
-| `prd_review` | Spawn `product_manager`, `developer`, and `tester` tasks independently with `$sdlc-review`; wait and synthesize disagreements. |
+| `prd_review` | Spawn `product_manager`, `developer`, and `tester` tasks independently with `$sdlc-review`; wait, synthesize disagreements, then prefer one `submit-gate-review` bundle for all verdicts and meeting notes. |
 | `design` | Spawn a `developer` task with `$sdlc-engineering` and a `tester` task with `$sdlc-testing`; parallelize only when their writes do not overlap. |
-| `readiness_review` | Spawn all three role tasks independently with `$sdlc-review`. |
+| `readiness_review` | Spawn every required role task independently with `$sdlc-review`; submit their verdicts and the meeting atomically. |
 | `prototype` | Spawn a `developer` task with `$sdlc-engineering` to create the smallest inspectable prototype, MVP, screenshot, or demo. |
 | `user_feedback` | Present the prototype to the user; use `record-user-feedback`. Approval unlocks implementation; `request_changes` or `reject` preserves the feedback and rewinds to the selected affected stage. |
 | `implementation` | Spawn a `developer` task with `$sdlc-engineering`. |
 | `verification` | Spawn a `tester` task with `$sdlc-testing`; send confirmed defects to a `developer` task. In strict mode prefer one `submit-verification` bundle that binds the scoped committed source, every criterion verdict, and the profile-appropriate final journey. |
-| `acceptance` | Spawn all three role tasks with `$sdlc-review`; product checks each confirmed core outcome, tester checks current-source journey evidence, and developer answers technical findings. |
+| `acceptance` | Spawn all required role tasks with `$sdlc-review`; product checks each confirmed core outcome, tester checks current-source journey evidence, developer answers technical findings, and the coordinator submits one gate-review bundle. |
 | `delivery_confirmation` | In every mode, show the user the working result, implementation summary, and test evidence; record explicit approval or requested changes with `record-delivery-confirmation`. |
 
 Use a role-named subagent task and include the role boundary plus the explicit bundled `$sdlc-*` Skill in its prompt. Project custom agents may be used when available, but the workflow must never depend on them. Never omit the Skill and rely on the task name alone.
@@ -69,7 +70,7 @@ Only route stages present in the state's `flow_stages`. In `micro`, assign imple
 - At acceptance, an open `major` issue also blocks delivery. Resolve it, or record an evidenced `accepted_risk` or `deferred` disposition with the named human authority; deferred issues require a due date.
 - After every exchange involving two or more roles, create concise meeting notes that preserve each role's key position, disagreements, decisions, owners, and follow-up actions. Do not store a raw transcript.
 - Record every role verdict with the canonical subagent task/session identifier as `--actor-ref`. The state tool rejects one reference reused by different roles at the same gate and binds the references into meeting and human-approval snapshots. This is traceability, not cryptographic authentication.
-- Record gate meetings only after collecting independent role verdicts. The PRD, readiness, and acceptance gates cannot advance without current meeting notes covering every required role.
+- Record gate meetings only after collecting independent role verdicts. Prefer one `submit-gate-review` manifest containing exactly the required roles, distinct actor references/evidence, and the synthesized meeting record. Validation is atomic: an invalid role or meeting leaves the prior gate state unchanged.
 - When an indexed artifact changes, the state tool automatically rewinds to its earliest affected stage and supersedes downstream evidence. Treat the returned `change_control_required` event as a required cross-role change-control discussion before rebuilding downstream artifacts.
 - Evidence is live: if an indexed artifact, review, meeting note, or human approval file changes after recording, its hash no longer matches and the gate cannot advance until it is recorded and reviewed again.
 - Strict verification is source-live and scope-aware: prefer `submit-verification` with a reviewed list of repository-relative source paths. The state tool binds Git object metadata once per gate evaluation; a relevant scoped edit makes the evidence stale. Use an empty path list only when the whole repository is the real delivery boundary.
@@ -121,6 +122,7 @@ workflow.py record-delivery-confirmation --verdict approve --summary "..." --evi
 workflow.py add-issue --source testing --severity blocker --summary "..."
 workflow.py resolve-issue --issue-id ISSUE-001 --resolved-by product --resolution "..." --evidence docs/requirements/.../01-prd.md
 workflow.py disposition-issue --issue-id ISSUE-002 --disposition accepted_risk --approved-by "release-owner" --rationale "..." --evidence docs/requirements/.../decisions/ISSUE-002.md
+workflow.py submit-gate-review --manifest docs/requirements/.../reviews/readiness-bundle.yaml
 workflow.py decide --gate prd_review --role testing --actor-ref tester-task-id --verdict approve --evidence docs/requirements/.../reviews/prd-testing.md
 workflow.py record-meeting --type prd_review --title "PRD review" --participants product,engineering,testing --outcome approved --path docs/requirements/.../meetings/MTG-001-prd-review.md
 workflow.py record-human-approval --gate acceptance --approved-by "release-owner" --evidence docs/requirements/.../approvals/acceptance.md
@@ -129,6 +131,6 @@ workflow.py repair-state --from-backup --confirm RESTORE
 workflow.py advance
 ```
 
-Treat the granular source, criterion, and journey commands as advanced recovery tools. The normal strict route is the single validation bundle so the coordinator cannot partially register a verification run.
+Treat granular `decide`/`record-meeting` and source/criterion/journey commands as advanced recovery tools. The normal route uses one gate-review bundle per enabled role gate and one verification bundle in strict mode, preventing partially registered review runs.
 
 Keep meeting files under `docs/requirements/<workflow-id>/meetings/` and include the returned `MTG-*` ID in later issue, change, or delivery summaries when relevant.

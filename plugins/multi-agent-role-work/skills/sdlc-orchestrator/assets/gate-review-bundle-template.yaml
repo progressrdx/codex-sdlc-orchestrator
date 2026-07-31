@@ -1,0 +1,27 @@
+# Atomic gate review bundle
+#
+# Submit once after the independent role tasks have returned:
+# workflow.py submit-gate-review --manifest <this-file>
+gate: readiness_review
+
+# Include exactly the roles required by the selected mode and gate.
+# actor_ref is the canonical Codex subagent task/session reference.
+decisions:
+  - role: engineering
+    actor_ref: engineering-task-id
+    verdict: approve
+    evidence: docs/requirements/<workflow-id>/reviews/readiness-engineering.md
+    notes: No blocking technical findings remain.
+  - role: testing
+    actor_ref: testing-task-id
+    verdict: approve
+    evidence: docs/requirements/<workflow-id>/reviews/readiness-testing.md
+    notes: The test plan is executable and covers the approved scope.
+
+meeting:
+  title: Readiness review
+  participants:
+    - engineering
+    - testing
+  outcome: approved
+  path: docs/requirements/<workflow-id>/meetings/MTG-readiness-review.md

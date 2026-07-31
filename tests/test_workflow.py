@@ -1655,6 +1655,83 @@ class WorkflowToolTests(unittest.TestCase):
         self.assertEqual("cli", after["journey_validation"]["profile"])
         self.assertEqual(["app.py"], after["source_revision"]["scope_paths"])
 
+    def test_submit_gate_review_registers_decisions_and_meeting_atomically(self) -> None:
+        self.init("quick")
+        self.complete_discovery()
+        self.record("technical_design", "requirements/REQ-test-flow/03-design.md")
+        self.record("test_plan", "requirements/REQ-test-flow/05-test-plan.md")
+        self.run_tool("advance")
+        engineering = self.write_artifact(
+            "requirements/REQ-test-flow/reviews/readiness-engineering-bundle.md",
+            "# readiness_review engineering\n\nThe approved design is feasible and implementation-ready.\n\n"
+            "## Findings\n\nNo blocking engineering findings remain.\n\n## Verdict\n\napprove\n",
+        )
+        testing = self.write_artifact(
+            "requirements/REQ-test-flow/reviews/readiness-testing-bundle.md",
+            "# readiness_review testing\n\nThe test plan is executable against the approved scope.\n\n"
+            "## Findings\n\nNo blocking testing findings remain.\n\n## Verdict\n\napprove\n",
+        )
+        meeting = self.write_artifact(
+            "requirements/REQ-test-flow/meetings/MTG-readiness-bundle.md",
+            "# readiness_review meeting\n\n## Participants\n\nengineering and testing\n\n"
+            "## Decisions and rationale\n\nBoth independent verdicts were retained.\n\n"
+            "## Outcome\n\napproved\n",
+        )
+        bundle = {
+            "gate": "readiness_review",
+            "decisions": [
+                {
+                    "role": "engineering",
+                    "actor_ref": "engineering-agent",
+                    "verdict": "approve",
+                    "evidence": str(engineering.relative_to(self.root)),
+                },
+                {
+                    "role": "testing",
+                    "actor_ref": "engineering-agent",
+                    "verdict": "approve",
+                    "evidence": str(testing.relative_to(self.root)),
+                },
+            ],
+            "meeting": {
+                "title": "Readiness review",
+                "participants": ["engineering", "testing"],
+                "outcome": "approved",
+                "path": str(meeting.relative_to(self.root)),
+            },
+        }
+        manifest = self.write_artifact(
+            "requirements/REQ-test-flow/readiness-bundle.json",
+            json.dumps(bundle),
+        )
+        before = json.loads(self.run_tool("status", "--json").stdout)["revision"]
+        rejected = self.run_tool(
+            "submit-gate-review",
+            "--manifest",
+            str(manifest.relative_to(self.root)),
+            expected=2,
+        )
+        self.assertIn("Actor reference is reused", rejected.stderr)
+        unchanged = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual(before, unchanged["revision"])
+        self.assertEqual({}, unchanged["decisions"])
+
+        bundle["decisions"][1]["actor_ref"] = "testing-agent"
+        manifest.write_text(json.dumps(bundle), encoding="utf-8")
+        self.run_tool(
+            "submit-gate-review",
+            "--manifest",
+            str(manifest.relative_to(self.root)),
+        )
+        recorded = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual(before + 1, recorded["revision"])
+        self.assertEqual(
+            {"engineering", "testing"},
+            set(recorded["decisions"]["readiness_review"]),
+        )
+        self.assertEqual("readiness_review", recorded["meetings"][-1]["type"])
+        self.run_tool("advance")
+
     def test_scope_change_authorizes_not_applicable_criterion(self) -> None:
         self.init("strict")
         self.initialize_git_source()

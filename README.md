@@ -97,6 +97,15 @@ The manifest contains the reviewed source paths, actual build and test commands,
 
 Enabled PRD review, readiness review, and acceptance gates require independent role verdicts plus current meeting notes covering all required roles. Unresolved blockers prevent the workflow from advancing. When preview is enabled, explicit user approval is required before implementation. A user `request_changes` or `reject` verdict is preserved and automatically rewinds the workflow to the affected stage.
 
+Gate recording is also bundled. Instead of three separate role-decision commands followed by a meeting command, the coordinator normally submits one manifest:
+
+```bash
+workflow.py submit-gate-review \
+  --manifest docs/requirements/<requirement-id>/reviews/readiness-bundle.yaml
+```
+
+The state changes only after the complete role set, distinct actor references and evidence, verdict consistency, and meeting record all validate.
+
 Each role verdict carries a distinct Codex task/session reference. The reference is included in meeting and human-approval snapshots, preventing accidental use of one role task for multiple approvals. This provides traceability, not cryptographic proof of identity.
 
 User-approved scope reductions remain conservative by default, but they can include an evidenced earliest impact stage. For example, deferring one external `AC-*` during acceptance can rewind only to verification when the user-approved record explains why the PRD, design, and implementation remain valid.
@@ -117,6 +126,7 @@ Workflow state uses:
 - Formal major-issue disposition: acceptance blocks on open major findings unless a named authority records an evidenced risk acceptance or scheduled deferral.
 - Impact-scoped change control with conservative fallback.
 - Distinct role task/session references bound into gate snapshots.
+- Atomic gate-review bundles for role verdicts and meeting notes.
 
 These are local consistency controls, not identity authentication or tamper-proof audit guarantees. See [SECURITY.md](SECURITY.md) and [THREAT_MODEL.md](THREAT_MODEL.md).
 
