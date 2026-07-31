@@ -498,4 +498,3 @@ def cmd_escalate_mode(args: argparse.Namespace) -> None:
     save_state(path, state)
     print(f"Mode escalation approved by {args.approved_by}: {old_mode} -> {target}")
     print("Workflow rewound to scope_check; refresh the baseline before continuing.")
-

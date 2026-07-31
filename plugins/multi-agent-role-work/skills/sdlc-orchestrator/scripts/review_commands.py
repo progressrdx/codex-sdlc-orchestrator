@@ -314,4 +314,3 @@ def cmd_record_human_approval(args: argparse.Namespace) -> None:
     add_history(state, "human_approval", f"{args.gate}:{args.approved_by}")
     save_state(path, state)
     print(f"Recorded human approval for {args.gate} by {args.approved_by}")
-
