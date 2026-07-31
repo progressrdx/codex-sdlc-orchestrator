@@ -31,6 +31,7 @@ class WorkflowToolTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.meeting_counter = 0
+        self.risk_assessment_counter = 0
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -88,7 +89,8 @@ class WorkflowToolTests(unittest.TestCase):
         clarification: str | None = None,
         confirmation: str | None = None,
         preview: str | None = None,
-    ) -> None:
+        expected: int = 0,
+    ) -> subprocess.CompletedProcess[str]:
         mode = selected_mode or self.workflow_mode
         default_risks = {
             "micro": (),
@@ -97,7 +99,18 @@ class WorkflowToolTests(unittest.TestCase):
             "strict": ("data_migration",),
         }
         full_flow = mode in {"standard", "strict"}
-        self.run_tool(
+        self.risk_assessment_counter += 1
+        risk_evidence = self.write_artifact(
+            f"requirements/REQ-test-flow/00-scope-and-risk-{self.risk_assessment_counter}.md",
+            (
+                "# Scope and risk assessment\n\n"
+                "## Task baseline\n\nThe intended outcome, scope, exclusions, acceptance, and verification are explicit.\n\n"
+                "## Requirement gaps\n\nAll eight required categories were checked and material gaps are listed in state.\n\n"
+                "## Risk flags\n\nApplicable flags and their evidence were independently assessed.\n\n"
+                "## Workflow decision\n\nThe recommended and selected modes plus conditional gates are documented.\n"
+            ),
+        )
+        return self.run_tool(
             "assess-risk",
             "--selected-mode",
             mode,
@@ -123,6 +136,8 @@ class WorkflowToolTests(unittest.TestCase):
             "The requested behavior is observable and satisfies the recorded criteria.",
             "--verification",
             "Run focused automated checks and independent behavior verification.",
+            "--evidence",
+            str(risk_evidence.relative_to(self.root)),
             *(item for flag in (risks if risks is not None else default_risks[mode]) for item in ("--risk", flag)),
             *(item for gap in (gaps or ()) for item in ("--gap", gap)),
             "--needs-clarification",
@@ -131,6 +146,7 @@ class WorkflowToolTests(unittest.TestCase):
             confirmation or ("yes" if full_flow or mode == "quick" else "no"),
             "--needs-preview",
             preview or ("yes" if full_flow or mode == "quick" else "no"),
+            expected=expected,
         )
 
     def write_artifact(
@@ -191,6 +207,23 @@ class WorkflowToolTests(unittest.TestCase):
                 "## Open items\n\nNo unresolved business decision blocks the next stage.\n"
             ),
         )
+        if self.workflow_mode == "strict":
+            goals = self.write_artifact(
+                "requirements/REQ-test-flow/00-core-goals.md",
+                (
+                    "# User-confirmed core goals\n\n"
+                    "## User confirmation\n\nThe user confirmed and approved GOAL-001 as the immutable outcome baseline.\n\n"
+                    "## GOAL-001\n\nDeliver the real requested behavior, not a mock-only substitute.\n\n"
+                    "## Scope integrity\n\nAny reduction requires a separate user-approved scope change.\n"
+                ),
+            )
+            self.run_tool(
+                "record-core-goals",
+                "--goal",
+                "GOAL-001=Deliver the real requested behavior.",
+                "--evidence",
+                str(goals.relative_to(self.root)),
+            )
 
     def complete_discovery(self) -> None:
         self.run_tool("advance")
@@ -238,6 +271,26 @@ class WorkflowToolTests(unittest.TestCase):
         self.run_tool("advance")
         self.record_user_feedback()
         self.run_tool("advance")
+
+    def confirm_delivery(self, verdict: str = "approve") -> None:
+        evidence = self.write_artifact(
+            f"requirements/REQ-test-flow/delivery-{verdict}.md",
+            (
+                "# User delivery confirmation\n\n"
+                f"## User verdict\n\nThe user recorded {verdict} after inspecting the verified result.\n\n"
+                "## Evidence reviewed\n\nThe implementation summary and independent verification report were shown.\n\n"
+                "## Next step\n\nComplete delivery when approved; otherwise revise the affected work.\n"
+            ),
+        )
+        self.run_tool(
+            "record-delivery-confirmation",
+            "--verdict",
+            verdict,
+            "--summary",
+            f"The user chose {verdict} after reviewing delivery evidence.",
+            "--evidence",
+            str(evidence.relative_to(self.root)),
+        )
 
     def record_gate_meeting(
         self,
@@ -509,6 +562,13 @@ class WorkflowToolTests(unittest.TestCase):
             "Replace one confirmed button label without changing behavior.",
         )
         self.run_tool("advance")
+        risk_evidence = self.write_artifact(
+            "requirements/REQ-test-flow/00-scope-and-risk.md",
+            "# Scope and risk assessment\n\n## Task baseline\n\nThe label-only scope is bounded.\n\n"
+            "## Requirement gaps\n\nAll required areas were checked with no material gap.\n\n"
+            "## Risk flags\n\nNo listed risk applies.\n\n"
+            "## Workflow decision\n\nMicro is the selected low-risk mode.\n",
+        )
         self.run_tool(
             "assess-risk",
             "--selected-mode",
@@ -535,6 +595,8 @@ class WorkflowToolTests(unittest.TestCase):
             "The new label renders in the existing button.",
             "--verification",
             "Run the focused UI test and inspect the rendered label.",
+            "--evidence",
+            str(risk_evidence.relative_to(self.root)),
             "--needs-clarification",
             "no",
             "--needs-confirmation",
@@ -545,15 +607,45 @@ class WorkflowToolTests(unittest.TestCase):
         state = json.loads(self.run_tool("status", "--json").stdout)
         self.assertEqual("micro", state["workflow"]["mode"])
         self.assertEqual(
-            ["intake", "scope_check", "implementation", "verification", "completed"],
+            [
+                "intake",
+                "scope_check",
+                "implementation",
+                "verification",
+                "delivery_confirmation",
+                "completed",
+            ],
             state["workflow"]["flow_stages"],
         )
         self.run_tool("advance")
         self.record("implementation", "requirements/REQ-test-flow/implementation.md")
         self.run_tool("advance")
         self.record("verification_report", "requirements/REQ-test-flow/verification.md")
+        self.run_tool("advance")
+        blocked = self.run_tool("advance", expected=2)
+        self.assertIn("artifact:delivery_confirmation", blocked.stderr)
+        self.confirm_delivery()
         completed = self.run_tool("advance")
-        self.assertIn("verification -> completed", completed.stdout)
+        self.assertIn("delivery_confirmation -> completed", completed.stdout)
+
+    def test_micro_delivery_change_request_rewinds_implementation(self) -> None:
+        self.init("micro")
+        self.run_tool("advance")
+        self.assess_risk("micro")
+        self.run_tool("advance")
+        self.record("implementation", "requirements/REQ-test-flow/implementation.md")
+        self.run_tool("advance")
+        self.record("verification_report", "requirements/REQ-test-flow/verification.md")
+        self.run_tool("advance")
+        self.confirm_delivery("request_changes")
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual("implementation", state["workflow"]["current_stage"])
+        self.assertEqual("superseded", state["artifacts"]["implementation"]["status"])
+        self.assertEqual("superseded", state["artifacts"]["verification_report"]["status"])
+        self.assertEqual(
+            "request_changes",
+            state["delivery_confirmation_records"][0]["verdict"],
+        )
 
     def test_quick_triage_can_skip_unneeded_questions_and_preview(self) -> None:
         self.init("quick")
@@ -572,6 +664,29 @@ class WorkflowToolTests(unittest.TestCase):
         self.assertNotIn("requirement_confirmation", state["workflow"]["flow_stages"])
         self.assertNotIn("prototype", state["workflow"]["flow_stages"])
         self.assertNotIn("user_feedback", state["workflow"]["flow_stages"])
+
+    def test_combined_quick_risks_raise_the_minimum_to_standard(self) -> None:
+        self.init("auto")
+        self.run_tool("advance")
+        rejected = self.assess_risk(
+            "quick",
+            risks=("scope_expansion", "user_visible", "external_dependency"),
+            clarification="no",
+            confirmation="no",
+            preview="yes",
+            expected=2,
+        )
+        self.assertIn("below the safe minimum standard", rejected.stderr)
+
+        verification_pair = self.assess_risk(
+            "quick",
+            risks=("weak_verification", "user_visible"),
+            clarification="no",
+            confirmation="no",
+            preview="yes",
+            expected=2,
+        )
+        self.assertIn("below the safe minimum standard", verification_pair.stderr)
 
     def test_risk_triage_rejects_mode_below_safe_minimum(self) -> None:
         self.init("auto")
@@ -604,6 +719,8 @@ class WorkflowToolTests(unittest.TestCase):
             "All callers handle the new response contract.",
             "--verification",
             "Run contract and compatibility tests.",
+            "--evidence",
+            "missing-risk-evidence.md",
             expected=2,
         )
         self.assertIn("below the safe minimum standard", rejected.stderr)
@@ -625,6 +742,8 @@ class WorkflowToolTests(unittest.TestCase):
             "The label renders.",
             "--verification",
             "Inspect the label.",
+            "--evidence",
+            "missing-risk-evidence.md",
             expected=2,
         )
         self.assertIn("Requirement-gap analysis is incomplete", rejected.stderr)
@@ -748,6 +867,152 @@ class WorkflowToolTests(unittest.TestCase):
         self.run_tool("advance")
         self.assertIn("Stage: clarification", self.run_tool("status").stdout)
 
+    def test_resolved_risk_clears_pending_escalation_with_independent_evidence(self) -> None:
+        self.init("micro")
+        self.run_tool("advance")
+        self.assess_risk("micro")
+        self.run_tool("advance")
+        risk_evidence = self.write_artifact(
+            "requirements/REQ-test-flow/risks/RSK-api.md",
+            "# API risk\n\n## Evidence\n\nA public API response may need to change.\n\n"
+            "## Impact\n\nCompatibility requires a decision.\n\n## Recommendation\n\nEscalate for review.\n",
+        )
+        self.run_tool(
+            "report-risk",
+            "--source",
+            "engineering",
+            "--risk",
+            "api_change",
+            "--summary",
+            "A public API change appeared necessary.",
+            "--evidence",
+            str(risk_evidence.relative_to(self.root)),
+        )
+        resolution = self.write_artifact(
+            "requirements/REQ-test-flow/risks/RSK-001-resolution.md",
+            "# RSK-001 resolved\n\n## Resolver\n\nengineering removed the API contract change.\n\n"
+            "## Independent verification\n\ntesting verified that the existing API remains unchanged.\n\n"
+            "## Result\n\nThe reported escalation trigger no longer applies.\n",
+        )
+        result = self.run_tool(
+            "resolve-risk",
+            "--risk-id",
+            "RSK-001",
+            "--resolution",
+            "Implementation now preserves the public API contract.",
+            "--resolved-by",
+            "engineering",
+            "--verified-by",
+            "testing",
+            "--evidence",
+            str(resolution.relative_to(self.root)),
+        )
+        self.assertIn("No escalation blocker remains", result.stdout)
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual("resolved", state["risk_reports"][0]["status"])
+        self.assertEqual("cleared", state["escalation"]["status"])
+
+    def test_only_reporter_or_user_can_withdraw_a_risk(self) -> None:
+        self.init("micro")
+        self.run_tool("advance")
+        self.assess_risk("micro")
+        self.run_tool("advance")
+        risk_evidence = self.write_artifact(
+            "requirements/REQ-test-flow/risks/RSK-api.md",
+            "# API risk\n\n## Evidence\n\nA public API response may need to change.\n\n"
+            "## Impact\n\nCompatibility requires a decision.\n\n## Recommendation\n\nEscalate for review.\n",
+        )
+        self.run_tool(
+            "report-risk",
+            "--source",
+            "engineering",
+            "--risk",
+            "api_change",
+            "--summary",
+            "A public API change appeared necessary.",
+            "--evidence",
+            str(risk_evidence.relative_to(self.root)),
+        )
+        withdrawal = self.write_artifact(
+            "requirements/REQ-test-flow/risks/RSK-001-withdrawal.md",
+            "# RSK-001 withdrawn\n\n## Reporter\n\nengineering withdrew the report after correcting the analysis.\n\n"
+            "## Reason\n\nThe referenced interface is private and unchanged.\n\n"
+            "## Result\n\nThe mistaken escalation trigger is removed.\n",
+        )
+        unauthorized = self.run_tool(
+            "withdraw-risk",
+            "--risk-id",
+            "RSK-001",
+            "--reason",
+            "The report was mistaken.",
+            "--withdrawn-by",
+            "testing",
+            "--evidence",
+            str(withdrawal.relative_to(self.root)),
+            expected=2,
+        )
+        self.assertIn("original reporter or the user", unauthorized.stderr)
+        self.run_tool(
+            "withdraw-risk",
+            "--risk-id",
+            "RSK-001",
+            "--reason",
+            "The report was based on a private interface.",
+            "--withdrawn-by",
+            "engineering",
+            "--evidence",
+            str(withdrawal.relative_to(self.root)),
+        )
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual("withdrawn", state["risk_reports"][0]["status"])
+        self.assertEqual("cleared", state["escalation"]["status"])
+
+    def test_user_can_accept_only_waivable_escalation_risk_with_expiry(self) -> None:
+        self.init("micro")
+        self.run_tool("advance")
+        self.assess_risk("micro")
+        self.run_tool("advance")
+        risk_evidence = self.write_artifact(
+            "requirements/REQ-test-flow/risks/RSK-external.md",
+            "# External dependency risk\n\n## Evidence\n\nA non-critical external service is required.\n\n"
+            "## Impact\n\nVerification is slower but no sensitive data or production action is involved.\n\n"
+            "## Recommendation\n\nUse quick mode or obtain explicit risk acceptance.\n",
+        )
+        self.run_tool(
+            "report-risk",
+            "--source",
+            "engineering",
+            "--risk",
+            "external_dependency",
+            "--summary",
+            "A non-critical external dependency was discovered.",
+            "--evidence",
+            str(risk_evidence.relative_to(self.root)),
+        )
+        acceptance = self.write_artifact(
+            "requirements/REQ-test-flow/risks/RSK-001-acceptance.md",
+            "# RSK-001 accepted_risk\n\n## Authority\n\nAlice explicitly accepted_risk for the external dependency.\n\n"
+            "## Rationale\n\nThe delivery is reversible and independently verifiable.\n\n"
+            "## Expiry\n\nThis decision expires on 2099-12-31 and must then be reassessed.\n",
+        )
+        accepted = self.run_tool(
+            "accept-escalation-risk",
+            "--approved-by",
+            "Alice",
+            "--reason",
+            "The reversible dependency risk is acceptable for this bounded change.",
+            "--expires-on",
+            "2099-12-31",
+            "--evidence",
+            str(acceptance.relative_to(self.root)),
+        )
+        self.assertIn("assurance is reduced", accepted.stdout)
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual("micro", state["workflow"]["mode"])
+        self.assertEqual("accepted_risk", state["escalation"]["status"])
+        self.assertEqual("reduced", state["escalation"]["assurance"])
+        self.assertEqual("accepted_risk", state["risk_reports"][0]["status"])
+
     def test_strict_escalation_adds_human_readiness_and_acceptance_gates(self) -> None:
         self.init("quick")
         self.run_tool("advance")
@@ -778,6 +1043,25 @@ class WorkflowToolTests(unittest.TestCase):
             "--evidence",
             str(risk_evidence.relative_to(self.root)),
         )
+        forbidden_acceptance = self.write_artifact(
+            "requirements/REQ-test-flow/approvals/RSK-001-acceptance.md",
+            "# RSK-001 accepted_risk request\n\n## Authority\n\nAlice requested accepted_risk.\n\n"
+            "## Rationale\n\nThe migration would otherwise remain in quick mode.\n\n"
+            "## Expiry\n\nThe requested exception expires on 2099-12-31.\n",
+        )
+        rejected = self.run_tool(
+            "accept-escalation-risk",
+            "--approved-by",
+            "Alice",
+            "--reason",
+            "Attempt to waive migration controls.",
+            "--expires-on",
+            "2099-12-31",
+            "--evidence",
+            str(forbidden_acceptance.relative_to(self.root)),
+            expected=2,
+        )
+        self.assertIn("cannot be accepted without upgrading mode", rejected.stderr)
         approval = self.write_artifact(
             "requirements/REQ-test-flow/approvals/RSK-001-strict.md",
             "# Strict escalation approval\n\n## User decision\n\nAlice approved strict mode.\n\n"
@@ -1032,7 +1316,23 @@ class WorkflowToolTests(unittest.TestCase):
             ["readiness_review", "acceptance"],
             strict_state["human_approval_policy"]["required_gates"],
         )
-        self.record("prd", "requirements/REQ-test-flow/01-prd.md")
+        self.record(
+            "prd",
+            "requirements/REQ-test-flow/01-prd.md",
+            text=(
+                "# Product requirements\n\n"
+                "## User outcome\n\nDeliver the confirmed real workflow behavior.\n\n"
+                "## Acceptance criteria\n\nAC-001: The final user journey works with semantically correct data.\n\n"
+                "## Exclusions\n\nNo core goal may be silently replaced by a mock.\n"
+            ),
+        )
+        blocked = self.run_tool("advance", expected=2)
+        self.assertIn("acceptance_criteria:prd_baseline", blocked.stderr)
+        self.run_tool(
+            "register-acceptance-criteria",
+            "--criterion",
+            "AC-001=The final user journey works with semantically correct data.",
+        )
         self.run_tool("advance")
         self.approve("prd_review", ("product", "engineering", "testing"))
         self.run_tool("advance")
@@ -1064,6 +1364,66 @@ class WorkflowToolTests(unittest.TestCase):
         )
         self.record("release_plan", "requirements/REQ-test-flow/07-release.md")
         self.run_tool("advance")
+
+    def test_strict_requirement_confirmation_cannot_skip_core_goals(self) -> None:
+        self.init("strict")
+        self.run_tool("advance")
+        self.assess_risk()
+        self.run_tool("advance")
+        self.record_clarification()
+        self.run_tool("advance")
+        self.record(
+            "requirement_confirmation",
+            "requirements/REQ-test-flow/00-requirement-confirmation.md",
+            text=(
+                "# User requirement confirmation\n\n"
+                "## User decision\n\nThe user confirmed and approved the clarified scope.\n\n"
+                "## Confirmed scope\n\nProceed with the real requested outcome.\n\n"
+                "## Open items\n\nNo unresolved decision remains.\n"
+            ),
+        )
+        blocked = self.run_tool("advance", expected=2)
+        self.assertIn("artifact:core_goals", blocked.stderr)
+        self.assertIn("core_goals:user_confirmed_baseline", blocked.stderr)
+
+    def test_direct_state_edit_fails_integrity_check(self) -> None:
+        self.init("quick")
+        state_path = self.root / ".ai-workflow" / "REQ-test-flow" / "state.yaml"
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        state["workflow"]["title"] = "Unsupported manual edit"
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        rejected = self.run_tool("status", expected=2)
+        self.assertIn("integrity check failed", rejected.stderr)
+
+    def test_source_fingerprint_detects_post_verification_code_change(self) -> None:
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            import workflow as workflow_module
+        finally:
+            sys.path.pop(0)
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.root), "config", "user.email", "tests@example.com"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "config", "user.name", "Workflow Tests"],
+            check=True,
+        )
+        source = self.root / "app.py"
+        source.write_text("print('verified')\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.root), "add", "app.py"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "commit", "-qm", "verified source"], check=True)
+
+        verified = workflow_module.current_source_fingerprint(self.root)
+        self.assertEqual([], verified["dirty_paths"])
+        source.write_text("print('changed after verification')\n", encoding="utf-8")
+        changed = workflow_module.current_source_fingerprint(self.root)
+        self.assertIn("app.py", changed["dirty_paths"])
+        self.assertNotEqual(
+            verified["source_tree_sha256"],
+            changed["source_tree_sha256"],
+        )
 
     def test_reopen_invalidates_downstream_gate_decisions(self) -> None:
         self.init()
@@ -1102,7 +1462,7 @@ class WorkflowToolTests(unittest.TestCase):
     def test_state_revision_increments_and_schema_is_validated(self) -> None:
         self.init("quick")
         initial = json.loads(self.run_tool("status", "--json").stdout)
-        self.assertEqual(5, initial["schema_version"])
+        self.assertEqual(7, initial["schema_version"])
         self.assertEqual(1, initial["revision"])
 
         self.run_tool("advance")
@@ -1131,7 +1491,7 @@ class WorkflowToolTests(unittest.TestCase):
         state_path.write_text(json.dumps(state), encoding="utf-8")
 
         migrated = json.loads(self.run_tool("status", "--json").stdout)
-        self.assertEqual(5, migrated["schema_version"])
+        self.assertEqual(7, migrated["schema_version"])
         self.assertNotIn("scope_check", migrated["workflow"]["flow_stages"])
         self.run_tool("advance")
         self.assertIn("Stage: clarification", self.run_tool("status").stdout)

@@ -28,6 +28,12 @@ Remain independent from the implementer's self-assessment. Use [test-plan-templa
 3. Record exact reproduction steps, expected behavior, actual behavior, and severity for defects.
 4. Re-run affected regression checks after fixes.
 5. Produce a per-criterion verdict: pass, fail, blocked, or not applicable.
+6. In strict mode, verify the exact committed source registered by `record-source-revision`; if source changes afterward, stop and require rebinding and regression.
+7. Execute the final user journey, not only unit tests, builds, screenshots, or source inspection. Exercise launch, core outcomes, content semantics, interactions, external links, UI quality, release hygiene, and source-of-truth behavior.
+8. Open every user-facing link or action in an appropriate environment. A hardcoded URL, successful build, or visible button does not prove navigation works.
+9. Inspect displayed values and copy for semantic correctness, unsupported/unknown states, truncation, overflow, stale data, placeholders, mock selectors, debug controls, and error recovery.
+10. Register every Must `AC-*` verdict with the coordinator. `not applicable` is invalid without a matching user-approved scope-change ID.
+11. Produce the final journey report against the same source tree and require all eight journey checks to pass before acceptance.
 
 For `micro`, act as a focused independent verifier. Confirm that the implementation stayed inside the recorded task baseline, achieved the observable acceptance result, and passed the stated checks. If coverage is weak, behavior is broader than declared, or verification exposes a systemic problem, stop acceptance, create a substantive risk evidence file, and return its path and exact flags so the coordinator can call `report-risk`. Do not expand the task into a full review ceremony when no new decision or material risk exists.
 
@@ -37,3 +43,4 @@ For `micro`, act as a focused independent verifier. Confirm that the implementat
 - Do not accept developer claims without evidence.
 - Do not modify production code; test-only changes require explicit assignment.
 - Do not approve while a blocker remains unresolved.
+- Do not treat prototype approval as final acceptance, and do not accept a self-declared mock-only boundary when the confirmed goal requires real behavior.

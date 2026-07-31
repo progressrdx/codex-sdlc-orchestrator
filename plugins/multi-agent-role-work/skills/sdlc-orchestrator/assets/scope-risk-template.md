@@ -25,6 +25,7 @@ Write `none found` only after checking the category. Ask the user only about unr
 
 ## Risk flags
 
+- Scope expansion:
 - User-visible behavior:
 - Subjective judgment:
 - Weak automated verification:
@@ -33,6 +34,7 @@ Write `none found` only after checking the category. Ask the user only about unr
 - Data-schema change:
 - Cross-module change:
 - Business ambiguity:
+- Systemic verification failure:
 - Security or privacy:
 - Irreversible operation:
 - Data migration:
@@ -46,3 +48,7 @@ Write `none found` only after checking the category. Ask the user only about unr
 - Clarification required:
 - Requirement confirmation required:
 - Preview and user feedback required:
+
+Apply the deterministic combination rules: three or more distinct quick-level flags require at
+least `standard`; `weak_verification` combined with either `user_visible` or
+`external_dependency` also requires at least `standard`. Any strict-level flag requires `strict`.

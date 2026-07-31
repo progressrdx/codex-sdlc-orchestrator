@@ -18,5 +18,7 @@ Review only gates present in the state's enabled `flow_stages`. Do not create mi
 5. Return exactly one verdict: `approve` or `reject`.
 6. Reject when any blocker is present or required evidence is absent.
 7. Do not coordinate conclusions with the other reviewers before submitting the independent verdict.
+8. Reject any attempt to convert a confirmed core goal or Must criterion to deferred, replaced, mock-only, or not applicable without a matching user-approved scope-change record.
+9. At acceptance, bind the review to the recorded source revision and final journey report. Reject stale verification, post-test source edits, untested links, semantically wrong content, visible placeholders/debug controls, or a goal-level outcome that is not satisfied.
 
 Return the material position, evidence, disagreements, required actions, and verdict in a form the coordinator can summarize without inventing discussion. The coordinator, not the reviewer, creates the cross-role meeting notes and records the final state transition.

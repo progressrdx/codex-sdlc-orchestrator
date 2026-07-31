@@ -17,6 +17,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from risk_policy import (
+    CLOSED_RISK_STATUSES,
+    MODE_RANK,
+    NON_WAIVABLE_ESCALATION_FLAGS,
+    REQUIREMENT_AREAS,
+    RISK_FLAGS,
+    combined_risk_flags,
+    recommended_mode_for,
+    refresh_escalation,
+)
+
 try:
     import fcntl  # type: ignore
 except ImportError:  # pragma: no cover - Windows fallback is exercised on Windows.
@@ -33,7 +44,7 @@ except ImportError:  # JSON is valid YAML 1.2 and is the dependency-free fallbac
     yaml = None
 
 
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 7
 WORKFLOW_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{2,80}")
 ROLES = ("product", "engineering", "testing")
 GATES = ("prd_review", "readiness_review", "acceptance")
@@ -45,6 +56,7 @@ ARTIFACTS = (
     "risk_assessment",
     "clarification_questions",
     "requirement_confirmation",
+    "core_goals",
     "prd",
     "review_log",
     "technical_design",
@@ -55,8 +67,10 @@ ARTIFACTS = (
     "user_feedback",
     "implementation",
     "verification_report",
+    "journey_report",
     "release_plan",
     "delivery_report",
+    "delivery_confirmation",
     "traceability",
 )
 ARTIFACT_STAGE = {
@@ -64,6 +78,7 @@ ARTIFACT_STAGE = {
     "risk_assessment": "scope_check",
     "clarification_questions": "clarification",
     "requirement_confirmation": "requirement_confirmation",
+    "core_goals": "requirement_confirmation",
     "prd": "prd",
     "review_log": "prd_review",
     "technical_design": "design",
@@ -75,14 +90,17 @@ ARTIFACT_STAGE = {
     "user_feedback": "user_feedback",
     "implementation": "implementation",
     "verification_report": "verification",
+    "journey_report": "verification",
     "traceability": "verification",
     "delivery_report": "acceptance",
+    "delivery_confirmation": "delivery_confirmation",
 }
 ARTIFACT_CHANGE_STAGE = {
     "original_request": "intake",
     "risk_assessment": "scope_check",
     "clarification_questions": "clarification",
     "requirement_confirmation": "requirement_confirmation",
+    "core_goals": "requirement_confirmation",
     "prd": "prd",
     "technical_design": "design",
     "database_design": "design",
@@ -93,11 +111,14 @@ ARTIFACT_CHANGE_STAGE = {
     "user_feedback": "user_feedback",
     "implementation": "implementation",
     "verification_report": "verification",
+    "journey_report": "verification",
     "traceability": "verification",
     "delivery_report": "acceptance",
+    "delivery_confirmation": "delivery_confirmation",
 }
 ARTIFACT_INVALIDATES_GATES = {
     "requirement_confirmation": GATES,
+    "core_goals": GATES,
     "prd": GATES,
     "technical_design": ("readiness_review", "acceptance"),
     "database_design": ("readiness_review", "acceptance"),
@@ -108,14 +129,17 @@ ARTIFACT_INVALIDATES_GATES = {
     "user_feedback": ("acceptance",),
     "implementation": ("acceptance",),
     "verification_report": ("acceptance",),
+    "journey_report": ("acceptance",),
     "traceability": ("acceptance",),
     "delivery_report": ("acceptance",),
+    "delivery_confirmation": (),
 }
 NOT_APPLICABLE_ALLOWED = {"database_design", "test_cases", "release_plan", "traceability"}
 DOCUMENT_ARTIFACTS = {
     "risk_assessment",
     "clarification_questions",
     "requirement_confirmation",
+    "core_goals",
     "prd",
     "technical_design",
     "database_design",
@@ -124,13 +148,25 @@ DOCUMENT_ARTIFACTS = {
     "prototype",
     "user_feedback",
     "verification_report",
+    "journey_report",
     "release_plan",
     "delivery_report",
+    "delivery_confirmation",
     "traceability",
     "review_log",
 }
 MIN_DOCUMENT_CHARS = 80
 MIN_DOCUMENT_HEADINGS = 3
+JOURNEY_CHECKS = (
+    "launch",
+    "core_outcomes",
+    "content_semantics",
+    "interactions",
+    "external_links",
+    "ui_quality",
+    "release_hygiene",
+    "source_truth",
+)
 FLOWS = {
     "auto": (
         "intake",
@@ -141,6 +177,7 @@ FLOWS = {
         "scope_check",
         "implementation",
         "verification",
+        "delivery_confirmation",
         "completed",
     ),
     "quick": (
@@ -219,6 +256,7 @@ STAGE_LABELS = {
     "implementation": "Implementation",
     "verification": "Verification",
     "acceptance": "Acceptance",
+    "delivery_confirmation": "User delivery confirmation",
     "completed": "Completed",
 }
 STAGE_GUIDANCE = {
@@ -235,53 +273,9 @@ STAGE_GUIDANCE = {
     "implementation": "Implement the approved scope and record implementation evidence.",
     "verification": "Run verification, record the report, and triage any defects.",
     "acceptance": "Review delivery evidence, handle major findings, and record final acceptance.",
+    "delivery_confirmation": "Show the verified result and evidence to the user; finish only after explicit approval, or rewind when changes are requested.",
     "completed": "No next workflow action is required.",
 }
-
-MODE_RANK = {"micro": 0, "quick": 1, "standard": 2, "strict": 3}
-RISK_FLAGS = (
-    "scope_expansion",
-    "user_visible",
-    "subjective_judgment",
-    "weak_verification",
-    "external_dependency",
-    "api_change",
-    "data_schema",
-    "cross_module",
-    "business_ambiguity",
-    "systemic_verification_failure",
-    "security_privacy",
-    "irreversible",
-    "data_migration",
-    "production_release",
-)
-REQUIREMENT_AREAS = (
-    "actors_permissions",
-    "goals_scope",
-    "business_rules_states",
-    "data_api",
-    "failures_edges",
-    "compatibility_rollout",
-    "subjective_choices",
-    "acceptance_verification",
-)
-RISK_MINIMUM_MODE = {
-    "scope_expansion": "quick",
-    "user_visible": "quick",
-    "subjective_judgment": "quick",
-    "weak_verification": "quick",
-    "external_dependency": "quick",
-    "api_change": "standard",
-    "data_schema": "standard",
-    "cross_module": "standard",
-    "business_ambiguity": "standard",
-    "systemic_verification_failure": "standard",
-    "security_privacy": "strict",
-    "irreversible": "strict",
-    "data_migration": "strict",
-    "production_release": "strict",
-}
-
 
 class WorkflowError(RuntimeError):
     pass
@@ -296,15 +290,6 @@ def workflow_stages(state: dict[str, Any]) -> tuple[str, ...]:
     if isinstance(configured, list) and configured:
         return tuple(str(stage) for stage in configured)
     return FLOWS[state["workflow"]["mode"]]
-
-
-def recommended_mode_for(flags: list[str]) -> str:
-    minimum = "micro"
-    for flag in flags:
-        candidate = RISK_MINIMUM_MODE[flag]
-        if MODE_RANK[candidate] > MODE_RANK[minimum]:
-            minimum = candidate
-    return minimum
 
 
 def flow_for(mode: str, gate_policy: dict[str, bool] | None = None) -> tuple[str, ...]:
@@ -348,6 +333,24 @@ def load_data(path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise WorkflowError(f"Invalid mapping in {path}")
     return data
+
+
+def state_checksum(state: dict[str, Any]) -> str:
+    """Hash semantic state so unsupported direct edits fail closed."""
+    payload = {key: value for key, value in state.items() if key != "state_checksum"}
+    rendered = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+
+
+def verify_state_checksum(state: dict[str, Any], path: Path) -> None:
+    if state.get("schema_version") != CURRENT_SCHEMA_VERSION:
+        return
+    expected = state.get("state_checksum")
+    if not isinstance(expected, str) or expected != state_checksum(state):
+        raise WorkflowError(
+            f"Workflow state integrity check failed for {path}. "
+            "Do not edit state.yaml directly; use workflow commands."
+        )
 
 
 def atomic_write_text(path: Path, rendered: str) -> None:
@@ -457,6 +460,7 @@ def state_path(root: Path, workflow_id: str | None = None) -> Path:
 def load_state(root: Path, workflow_id: str | None = None) -> tuple[Path, dict[str, Any]]:
     path = state_path(root, workflow_id)
     state = load_data(path)
+    verify_state_checksum(state, path)
     migrate_state(root, state)
     validate_state(state, path)
     return path, state
@@ -464,7 +468,7 @@ def load_state(root: Path, workflow_id: str | None = None) -> tuple[Path, dict[s
 
 def migrate_state(root: Path, state: dict[str, Any]) -> None:
     version = state.get("schema_version")
-    if version in {1, 2, 3, 4}:
+    if version in {1, 2, 3, 4, 5, 6}:
         state["schema_version"] = CURRENT_SCHEMA_VERSION
         state.setdefault("revision", 0)
         state.setdefault("human_approval_policy", {"required_gates": []})
@@ -476,8 +480,24 @@ def migrate_state(root: Path, state: dict[str, Any]) -> None:
             workflow.setdefault("flow_stages", list(LEGACY_V3_FLOWS[legacy_mode]))
         state.setdefault("risk_assessment", {"status": "legacy_not_required"})
         state.setdefault("user_feedback_records", [])
+        state.setdefault("delivery_confirmation_records", [])
         state.setdefault("risk_reports", [])
         state.setdefault("escalation", {"status": "none"})
+        if (
+            version == 5
+            and workflow.get("mode") == "micro"
+            and workflow.get("status") == "active"
+        ):
+            configured = workflow.get("flow_stages", [])
+            if "delivery_confirmation" not in configured and "completed" in configured:
+                configured.insert(configured.index("completed"), "delivery_confirmation")
+    state.setdefault("core_goals", {})
+    state.setdefault("scope_changes", [])
+    state.setdefault("acceptance_criteria", {})
+    state.setdefault("criterion_verdicts", {})
+    state.setdefault("core_outcomes", {})
+    state.setdefault("source_revision", {})
+    state.setdefault("journey_validation", {})
     for collection in ("artifacts", "human_approvals"):
         for item in state.get(collection, {}).values():
             if item.get("status") == "not_applicable" or item.get("evidence_sha256"):
@@ -543,7 +563,18 @@ def validate_state(state: dict[str, Any], path: Path) -> None:
     required_gates = state.get("human_approval_policy", {}).get("required_gates", [])
     if not isinstance(required_gates, list) or any(gate not in GATES for gate in required_gates):
         raise WorkflowError(f"Invalid human approval policy in {path}")
-    for name in ("artifacts", "decisions", "human_approvals", "escalation"):
+    for name in (
+        "artifacts",
+        "decisions",
+        "human_approvals",
+        "escalation",
+        "core_goals",
+        "acceptance_criteria",
+        "criterion_verdicts",
+        "core_outcomes",
+        "source_revision",
+        "journey_validation",
+    ):
         if not isinstance(state.get(name), dict):
             raise WorkflowError(f"Invalid {name} mapping in {path}")
     for name in (
@@ -551,7 +582,9 @@ def validate_state(state: dict[str, Any], path: Path) -> None:
         "meetings",
         "history",
         "user_feedback_records",
+        "delivery_confirmation_records",
         "risk_reports",
+        "scope_changes",
     ):
         if not isinstance(state.get(name), list):
             raise WorkflowError(f"Invalid {name} list in {path}")
@@ -620,9 +653,14 @@ def required_artifacts(state: dict[str, Any], stage: str) -> tuple[str, ...]:
         "implementation": ("implementation",),
         "verification": ("verification_report",),
         "acceptance": ("delivery_report",),
+        "delivery_confirmation": ("delivery_confirmation",),
     }.get(stage, ())
     if mode == "strict" and stage == "design":
         required += ("database_design", "release_plan")
+    if mode == "strict" and stage == "requirement_confirmation":
+        required += ("core_goals",)
+    if mode == "strict" and stage == "verification":
+        required += ("journey_report",)
     return required
 
 
@@ -784,6 +822,67 @@ def stage_requirements(root: Path, state: dict[str, Any]) -> tuple[list[str], li
         ):
             missing.append("risk_assessment:mode_selection")
 
+    if state["workflow"]["mode"] == "strict":
+        if stage == "requirement_confirmation":
+            goals_artifact = state.get("artifacts", {}).get("core_goals", {})
+            goals = state.get("core_goals", {})
+            if not goals or any(
+                goal.get("evidence_sha256") != goals_artifact.get("evidence_sha256")
+                for goal in goals.values()
+            ):
+                missing.append("core_goals:user_confirmed_baseline")
+        if stage == "prd":
+            prd = state.get("artifacts", {}).get("prd", {})
+            criteria = state.get("acceptance_criteria", {})
+            if not criteria or any(
+                item.get("prd_sha256") != prd.get("evidence_sha256")
+                for item in criteria.values()
+            ):
+                missing.append("acceptance_criteria:prd_baseline")
+        if stage in {"verification", "acceptance"}:
+            try:
+                fingerprint = current_source_fingerprint(root)
+            except WorkflowError as exc:
+                missing.append("source_revision:git_unavailable")
+                notes.append(str(exc))
+                fingerprint = {
+                    "source_tree_sha256": "",
+                    "dirty_paths": [],
+                }
+            source = state.get("source_revision", {})
+            if not source or source.get("source_tree_sha256") != fingerprint["source_tree_sha256"]:
+                missing.append("source_revision:stale_or_missing")
+            if fingerprint["dirty_paths"]:
+                missing.append("source_revision:uncommitted_source")
+            criteria = state.get("acceptance_criteria", {})
+            verdicts = state.get("criterion_verdicts", {})
+            for criterion_id in criteria:
+                verdict = verdicts.get(criterion_id, {})
+                if (
+                    not fingerprint["source_tree_sha256"]
+                    or not verdict_is_current(root, state, verdict, criterion_id)
+                ):
+                    missing.append(f"criterion_verdict:{criterion_id}")
+            journey = state.get("journey_validation", {})
+            if not (
+                journey.get("source_tree_sha256") == fingerprint["source_tree_sha256"]
+                and evidence_matches(
+                    root,
+                    str(journey.get("evidence", "")),
+                    journey.get("evidence_sha256"),
+                )
+                and all(journey.get("checks", {}).get(check) == "pass" for check in JOURNEY_CHECKS)
+            ):
+                missing.append("journey_validation:final_user_journey")
+        if stage == "acceptance":
+            for goal_id in state.get("core_goals", {}):
+                outcome = state.get("core_outcomes", {}).get(goal_id, {})
+                if (
+                    not fingerprint["source_tree_sha256"]
+                    or not outcome_is_current(root, state, outcome, goal_id)
+                ):
+                    missing.append(f"core_outcome:{goal_id}")
+
     if stage in GATES:
         decisions = state.get("decisions", {}).get(stage, {})
         for role in required_gate_roles(state, stage):
@@ -804,6 +903,12 @@ def stage_requirements(root: Path, state: dict[str, Any]) -> tuple[list[str], li
             f"mode {escalation.get('from_mode')} is below recommended "
             f"{escalation.get('recommended_mode')}"
         )
+    if (
+        escalation.get("status") == "accepted_risk"
+        and str(escalation.get("acceptance_expires_on", "")) < now()[:10]
+    ):
+        missing.append(f"escalation_acceptance_expired:{escalation.get('report_id', 'unknown')}")
+        notes.append("The accepted escalation risk must be reassessed or escalated.")
 
     blockers = open_blockers(state)
     if blockers:
@@ -815,6 +920,106 @@ def stage_requirements(root: Path, state: dict[str, Any]) -> tuple[list[str], li
             if item.get("severity") == "major" and item.get("status") == "open"
         )
     return missing, notes
+
+
+def scope_change_authorizes(
+    root: Path, state: dict[str, Any], change_id: str, item_id: str
+) -> bool:
+    return any(
+        change.get("id") == change_id
+        and change.get("status") == "approved"
+        and item_id in change.get("items", [])
+        and evidence_matches(
+            root, str(change.get("evidence", "")), change.get("evidence_sha256")
+        )
+        for change in state.get("scope_changes", [])
+    )
+
+
+def verdict_is_current(
+    root: Path, state: dict[str, Any], verdict: dict[str, Any], criterion_id: str
+) -> bool:
+    source_hash = current_source_fingerprint(root)["source_tree_sha256"]
+    if verdict.get("source_tree_sha256") != source_hash or not evidence_matches(
+        root, str(verdict.get("evidence", "")), verdict.get("evidence_sha256")
+    ):
+        return False
+    if verdict.get("verdict") == "pass":
+        return True
+    return verdict.get("verdict") == "not_applicable" and scope_change_authorizes(
+        root, state, str(verdict.get("scope_change_id", "")), criterion_id
+    )
+
+
+def outcome_is_current(
+    root: Path, state: dict[str, Any], outcome: dict[str, Any], goal_id: str
+) -> bool:
+    source_hash = current_source_fingerprint(root)["source_tree_sha256"]
+    if outcome.get("source_tree_sha256") != source_hash or not evidence_matches(
+        root, str(outcome.get("evidence", "")), outcome.get("evidence_sha256")
+    ):
+        return False
+    if outcome.get("verdict") == "satisfied":
+        return True
+    return outcome.get("verdict") in {"not_applicable", "deferred"} and scope_change_authorizes(
+        root, state, str(outcome.get("scope_change_id", "")), goal_id
+    )
+
+
+def current_source_fingerprint(root: Path) -> dict[str, Any]:
+    try:
+        head = subprocess.check_output(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise WorkflowError("Strict verification requires a Git repository with at least one commit.") from exc
+    ignored_prefixes = (".ai-workflow/", "docs/requirements/", ".idea/")
+    ignored_names = {".DS_Store"}
+    try:
+        output = subprocess.check_output(
+            ["git", "-C", str(root), "ls-files", "--cached", "--others", "--exclude-standard", "-z"]
+        )
+        status = subprocess.check_output(
+            ["git", "-C", str(root), "status", "--porcelain=v1", "-z"]
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise WorkflowError("Unable to inspect the Git source tree.") from exc
+
+    def relevant(raw: str) -> bool:
+        path = raw.strip()
+        return bool(path) and not path.startswith(ignored_prefixes) and Path(path).name not in ignored_names
+
+    files = sorted(path for path in output.decode("utf-8").split("\0") if relevant(path))
+    dirty_paths: list[str] = []
+    entries = status.decode("utf-8").split("\0")
+    index = 0
+    while index < len(entries):
+        entry = entries[index]
+        index += 1
+        if not entry:
+            continue
+        path = entry[3:] if len(entry) > 3 else ""
+        if entry[:2] in {"R ", "C "} and index < len(entries):
+            path = entries[index]
+            index += 1
+        if relevant(path):
+            dirty_paths.append(path)
+    digest = hashlib.sha256()
+    for relative in files:
+        absolute = root / relative
+        if not absolute.is_file():
+            continue
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(absolute.read_bytes())
+        digest.update(b"\0")
+    return {
+        "git_head": head,
+        "source_tree_sha256": digest.hexdigest(),
+        "dirty_paths": sorted(set(dirty_paths)),
+    }
 
 
 def outstanding_issues(state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -923,6 +1128,13 @@ def print_overview(payload: dict[str, Any]) -> None:
             f"Escalation required: {escalation.get('from_mode')} -> "
             f"{escalation.get('recommended_mode')} ({escalation.get('report_id')})"
         )
+    elif payload["escalation"].get("status") == "accepted_risk":
+        escalation = payload["escalation"]
+        print(
+            "Escalation risk accepted with reduced assurance until "
+            f"{escalation.get('acceptance_expires_on')} "
+            f"({escalation.get('report_id')})"
+        )
     gates = payload["human_approval_gates"]
     print("Human approval gates: " + (",".join(gates) if gates else "none"))
 
@@ -939,6 +1151,7 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
             )
     state["schema_version"] = CURRENT_SCHEMA_VERSION
     state["revision"] = expected_revision + 1
+    state["state_checksum"] = state_checksum(state)
     validate_state(state, path)
     save_data(path, state)
 
@@ -1071,8 +1284,16 @@ def cmd_init(args: argparse.Namespace) -> None:
         "meetings": [],
         "risk_assessment": {"status": "pending"},
         "user_feedback_records": [],
+        "delivery_confirmation_records": [],
         "risk_reports": [],
         "escalation": {"status": "none"},
+        "core_goals": {},
+        "scope_changes": [],
+        "acceptance_criteria": {},
+        "criterion_verdicts": {},
+        "core_outcomes": {},
+        "source_revision": {},
+        "journey_validation": {},
         "history": [
             {"at": timestamp, "event": "initialized", "detail": f"Started {args.mode} workflow"}
         ],
@@ -1131,7 +1352,7 @@ def cmd_assess_risk(args: argparse.Namespace) -> None:
     reported_flags = [
         str(flag)
         for report in state.get("risk_reports", [])
-        if report.get("status") not in {"resolved", "withdrawn"}
+        if report.get("status") not in CLOSED_RISK_STATUSES
         for flag in report.get("flags", [])
     ]
     flags = list(dict.fromkeys(list(args.risk or []) + reported_flags))
@@ -1191,45 +1412,33 @@ def cmd_assess_risk(args: argparse.Namespace) -> None:
             "Selected flow omits configured human approval gates: " + ",".join(unavailable)
         )
 
-    docs_dir = root / "docs" / "requirements" / workflow["id"]
-    assessment_path = docs_dir / "00-scope-and-risk.md"
-    rendered = (
-        f"# Scope and risk assessment: {workflow['title']}\n\n"
-        "## Task baseline\n\n"
-        f"Scope: {args.scope.strip()}\n\n"
-        f"Out of scope: {args.out_of_scope.strip()}\n\n"
-        f"Acceptance: {args.acceptance.strip()}\n\n"
-        f"Verification: {args.verification.strip()}\n\n"
-        "## Requirement gaps and uncertainties\n\n"
-        f"Checked areas:\n{markdown_bullets(checked_areas, 'none')}\n\n"
-        f"{markdown_bullets(gaps, 'No unresolved high-impact gap was found after the structured check.')}\n\n"
-        "## Risk triage\n\n"
-        f"{markdown_bullets(flags, 'No listed risk flag applies.')}\n\n"
-        "## Mode decision\n\n"
-        f"Requested mode: {requested}\n\n"
-        f"Recommended mode: {recommended}\n\n"
-        f"Selected mode: {selected}\n\n"
-        f"Reasons:\n{markdown_bullets(reasons, 'The selected mode matches the assessed scope and risk.')}\n\n"
-        "## Conditional gates\n\n"
-        f"Clarification: {'required' if clarification else 'not required'}\n\n"
-        f"Requirement confirmation: {'required' if confirmation else 'not required'}\n\n"
-        f"User preview and feedback: {'required' if preview else 'not required'}\n"
+    assessment_path, relative = repository_evidence_path(
+        root, args.evidence, minimum_chars=MIN_DOCUMENT_CHARS
     )
-    atomic_write_text(assessment_path, rendered)
-    relative = assessment_path.relative_to(root)
+    require_markdown_structure(assessment_path)
+    assessment_text = assessment_path.read_text(encoding="utf-8")
+    for marker in ("task baseline", "requirement gaps", "risk flags", "workflow decision"):
+        if not contains_marker(assessment_text, marker):
+            raise WorkflowError(f"Risk assessment evidence must identify: {marker}")
     evidence_hash = content_sha256(assessment_path)
     state.setdefault("artifacts", {})["risk_assessment"] = {
         "path": str(relative),
         "status": "ready",
         "evidence_sha256": evidence_hash,
         "updated_at": now(),
-        "notes": "Generated from structured scope and risk triage.",
+        "notes": "Registered from an independently authored scope and risk assessment.",
     }
     state["risk_assessment"] = {
         "status": "current",
         "flags": flags,
         "checked_areas": checked_areas,
         "gaps": gaps,
+        "baseline": {
+            "scope": args.scope.strip(),
+            "out_of_scope": args.out_of_scope.strip(),
+            "acceptance": args.acceptance.strip(),
+            "verification": args.verification.strip(),
+        },
         "recommended_mode": recommended,
         "selected_mode": selected,
         "gate_policy": policy,
@@ -1245,7 +1454,7 @@ def cmd_assess_risk(args: argparse.Namespace) -> None:
     if old_mode != selected:
         add_history(state, "mode_selected", f"{old_mode}->{selected}")
     save_state(path, state)
-    print(f"Risk assessment recorded: {relative}")
+    print(f"Risk assessment registered: {relative}")
     print(f"Recommended mode: {recommended}")
     print(f"Selected mode: {selected}")
     print("Enabled conditional gates: " + ",".join(name for name, enabled in policy.items() if enabled) if any(policy.values()) else "Enabled conditional gates: none")
@@ -1258,14 +1467,6 @@ def next_risk_report_id(state: dict[str, Any]) -> str:
         if match:
             numbers.append(int(match.group(1)))
     return f"RSK-{max(numbers, default=0) + 1:03d}"
-
-
-def combined_risk_flags(state: dict[str, Any]) -> list[str]:
-    flags = list(state.get("risk_assessment", {}).get("flags", []))
-    for report in state.get("risk_reports", []):
-        if report.get("status") not in {"resolved", "withdrawn"}:
-            flags.extend(report.get("flags", []))
-    return list(dict.fromkeys(str(flag) for flag in flags if flag in RISK_FLAGS))
 
 
 def cmd_report_risk(args: argparse.Namespace) -> None:
@@ -1287,45 +1488,34 @@ def cmd_report_risk(args: argparse.Namespace) -> None:
             raise WorkflowError(f"Risk evidence is already used by {report.get('id')}.")
 
     report_id = next_risk_report_id(state)
-    combined = list(dict.fromkeys(combined_risk_flags(state) + flags))
-    recommended = recommended_mode_for(combined)
-    requires_escalation = MODE_RANK[recommended] > MODE_RANK[workflow["mode"]]
     report = {
         "id": report_id,
         "source": args.source,
         "summary": args.summary.strip(),
         "flags": flags,
-        "status": "requires_escalation" if requires_escalation else "recorded",
-        "recommended_mode": recommended,
+        "status": "recorded",
+        "recommended_mode": recommended_mode_for(
+            list(dict.fromkeys(combined_risk_flags(state) + flags))
+        ),
         "evidence": str(relative),
         "evidence_sha256": evidence_hash,
         "at": now(),
     }
     state.setdefault("risk_reports", []).append(report)
     add_history(state, "risk_reported", f"{report_id}:{args.source}:{','.join(flags)}")
-
+    requires_escalation = refresh_escalation(
+        state,
+        summary=args.summary.strip(),
+        detected_by=args.source,
+        timestamp=now,
+    )
     if requires_escalation:
-        previous = state.get("escalation", {})
-        report_ids = list(previous.get("report_ids", [])) if previous.get("status") == "required" else []
-        report_ids.append(report_id)
-        previous_target = previous.get("recommended_mode", workflow["mode"])
-        target = (
-            recommended
-            if MODE_RANK[recommended] >= MODE_RANK.get(str(previous_target), -1)
-            else str(previous_target)
+        report["status"] = "requires_escalation"
+        add_history(
+            state,
+            "escalation_required",
+            f"{workflow['mode']}->{state['escalation']['recommended_mode']}:{report_id}",
         )
-        state["escalation"] = {
-            "status": "required",
-            "from_mode": workflow["mode"],
-            "recommended_mode": target,
-            "report_id": report_id,
-            "report_ids": list(dict.fromkeys(report_ids)),
-            "flags": combined,
-            "summary": args.summary.strip(),
-            "detected_by": args.source,
-            "at": now(),
-        }
-        add_history(state, "escalation_required", f"{workflow['mode']}->{target}:{report_id}")
     save_state(path, state)
     print(f"Recorded risk {report_id}: {relative}")
     if requires_escalation:
@@ -1336,6 +1526,191 @@ def cmd_report_risk(args: argparse.Namespace) -> None:
         print("Workflow advancement is blocked until explicit user approval is recorded.")
     else:
         print(f"Current mode {workflow['mode']} remains sufficient.")
+
+
+def risk_report_by_id(state: dict[str, Any], report_id: str) -> dict[str, Any]:
+    for report in state.get("risk_reports", []):
+        if report.get("id") == report_id:
+            return report
+    raise WorkflowError(f"Unknown risk report: {report_id}")
+
+
+def validate_risk_disposition_evidence(
+    root: Path,
+    state: dict[str, Any],
+    report: dict[str, Any],
+    *,
+    evidence: str,
+    disposition: str,
+    actor: str,
+) -> tuple[str, str]:
+    evidence_path, relative = repository_evidence_path(
+        root, evidence, minimum_chars=MIN_DOCUMENT_CHARS
+    )
+    require_markdown_structure(evidence_path)
+    evidence_text = evidence_path.read_text(encoding="utf-8")
+    for marker in (str(report["id"]), disposition, actor):
+        if not contains_marker(evidence_text, marker):
+            raise WorkflowError(f"Risk disposition evidence must identify: {marker}")
+    evidence_hash = content_sha256(evidence_path)
+    if evidence_hash == report.get("evidence_sha256"):
+        raise WorkflowError("Risk disposition requires evidence distinct from the risk report.")
+    for other in state.get("risk_reports", []):
+        if other.get("disposition_evidence_sha256") == evidence_hash:
+            raise WorkflowError("Risk disposition evidence is already used by another report.")
+    return str(relative), evidence_hash
+
+
+def cmd_resolve_risk(args: argparse.Namespace) -> None:
+    root = repository_root(args.root)
+    path, state = load_state(root, args.id)
+    report = risk_report_by_id(state, args.risk_id)
+    if report.get("status") in {"resolved", "withdrawn"}:
+        raise WorkflowError(f"Risk report is already closed: {args.risk_id}")
+    if args.resolved_by == args.verified_by:
+        raise WorkflowError("Risk resolution requires a distinct resolver and verifier.")
+    relative, evidence_hash = validate_risk_disposition_evidence(
+        root,
+        state,
+        report,
+        evidence=args.evidence,
+        disposition="resolved",
+        actor=args.resolved_by,
+    )
+    evidence_text = (root / relative).read_text(encoding="utf-8")
+    if not contains_marker(evidence_text, args.verified_by):
+        raise WorkflowError(
+            f"Risk resolution evidence must identify verifier: {args.verified_by}"
+        )
+    report.update(
+        {
+            "status": "resolved",
+            "resolution": args.resolution.strip(),
+            "resolved_by": args.resolved_by,
+            "verified_by": args.verified_by,
+            "disposition_evidence": relative,
+            "disposition_evidence_sha256": evidence_hash,
+            "resolved_at": now(),
+        }
+    )
+    still_required = refresh_escalation(
+        state,
+        summary=f"{args.risk_id} resolved: {args.resolution.strip()}",
+        detected_by=args.verified_by,
+        timestamp=now,
+    )
+    add_history(state, "risk_resolved", f"{args.risk_id}:{args.resolved_by}:{args.verified_by}")
+    save_state(path, state)
+    print(f"Resolved risk {args.risk_id}; independently verified by {args.verified_by}")
+    print("Escalation remains required." if still_required else "No escalation blocker remains.")
+
+
+def cmd_withdraw_risk(args: argparse.Namespace) -> None:
+    root = repository_root(args.root)
+    path, state = load_state(root, args.id)
+    report = risk_report_by_id(state, args.risk_id)
+    if report.get("status") in {"resolved", "withdrawn"}:
+        raise WorkflowError(f"Risk report is already closed: {args.risk_id}")
+    if args.withdrawn_by not in {report.get("source"), "user"}:
+        raise WorkflowError("Only the original reporter or the user may withdraw a risk.")
+    relative, evidence_hash = validate_risk_disposition_evidence(
+        root,
+        state,
+        report,
+        evidence=args.evidence,
+        disposition="withdrawn",
+        actor=args.withdrawn_by,
+    )
+    report.update(
+        {
+            "status": "withdrawn",
+            "withdrawal_reason": args.reason.strip(),
+            "withdrawn_by": args.withdrawn_by,
+            "disposition_evidence": relative,
+            "disposition_evidence_sha256": evidence_hash,
+            "withdrawn_at": now(),
+        }
+    )
+    still_required = refresh_escalation(
+        state,
+        summary=f"{args.risk_id} withdrawn: {args.reason.strip()}",
+        detected_by=args.withdrawn_by,
+        timestamp=now,
+    )
+    add_history(state, "risk_withdrawn", f"{args.risk_id}:{args.withdrawn_by}")
+    save_state(path, state)
+    print(f"Withdrew risk {args.risk_id}")
+    print("Escalation remains required." if still_required else "No escalation blocker remains.")
+
+
+def cmd_accept_escalation_risk(args: argparse.Namespace) -> None:
+    root = repository_root(args.root)
+    path, state = load_state(root, args.id)
+    escalation = state.get("escalation", {})
+    if escalation.get("status") != "required":
+        raise WorkflowError("No mode escalation is currently required.")
+    flags = set(escalation.get("flags", []))
+    forbidden = sorted(flags & NON_WAIVABLE_ESCALATION_FLAGS)
+    if forbidden:
+        raise WorkflowError(
+            "These escalation risks cannot be accepted without upgrading mode: "
+            + ",".join(forbidden)
+        )
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", args.expires_on):
+        raise WorkflowError("Expiry date must use YYYY-MM-DD.")
+    evidence_path, relative = repository_evidence_path(
+        root, args.evidence, minimum_chars=MIN_DOCUMENT_CHARS
+    )
+    require_markdown_structure(evidence_path)
+    evidence_text = evidence_path.read_text(encoding="utf-8")
+    for marker in ("accepted_risk", args.approved_by, str(escalation.get("report_id"))):
+        if not contains_marker(evidence_text, marker):
+            raise WorkflowError(f"Escalation risk acceptance evidence must identify: {marker}")
+    evidence_hash = content_sha256(evidence_path)
+    reports_by_id = {report.get("id"): report for report in state.get("risk_reports", [])}
+    reserved_hashes = {
+        reports_by_id[report_id].get("evidence_sha256")
+        for report_id in escalation.get("report_ids", [])
+        if report_id in reports_by_id
+    }
+    if evidence_hash in reserved_hashes:
+        raise WorkflowError("Escalation risk acceptance requires distinct evidence.")
+    for report_id in escalation.get("report_ids", []):
+        report = reports_by_id.get(report_id)
+        if report is None:
+            continue
+        report.update(
+            {
+                "status": "accepted_risk",
+                "accepted_by": args.approved_by.strip(),
+                "acceptance_reason": args.reason.strip(),
+                "acceptance_expires_on": args.expires_on,
+                "disposition_evidence": str(relative),
+                "disposition_evidence_sha256": evidence_hash,
+                "accepted_at": now(),
+            }
+        )
+    state["escalation"] = {
+        **escalation,
+        "status": "accepted_risk",
+        "approved_by": args.approved_by.strip(),
+        "acceptance_reason": args.reason.strip(),
+        "acceptance_expires_on": args.expires_on,
+        "acceptance_evidence": str(relative),
+        "acceptance_evidence_sha256": evidence_hash,
+        "assurance": "reduced",
+        "resolved_at": now(),
+    }
+    add_history(
+        state,
+        "escalation_risk_accepted",
+        f"{escalation.get('report_id')}:{args.approved_by}:{args.expires_on}",
+    )
+    save_state(path, state)
+    print(
+        "Accepted escalation risk without changing mode; assurance is reduced until "
+        f"{args.expires_on}."
+    )
 
 
 def cmd_escalate_mode(args: argparse.Namespace) -> None:
@@ -1490,6 +1865,302 @@ def cmd_next(args: argparse.Namespace) -> None:
         print(f"Note: {item}")
 
 
+def parse_key_value(values: list[str], label: str) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for value in values:
+        key, separator, description = value.partition("=")
+        key = key.strip()
+        description = description.strip()
+        if not separator or not key or not description:
+            raise WorkflowError(f"{label} must use ID=description: {value!r}")
+        if key in parsed:
+            raise WorkflowError(f"Duplicate {label} ID: {key}")
+        parsed[key] = description
+    return parsed
+
+
+def indexed_document(root: Path, raw_path: str) -> tuple[Path, Path, str]:
+    absolute, relative = repository_evidence_path(
+        root, raw_path, minimum_chars=MIN_DOCUMENT_CHARS
+    )
+    require_markdown_structure(absolute)
+    return absolute, relative, content_sha256(absolute)
+
+
+def cmd_record_core_goals(args: argparse.Namespace) -> None:
+    root = repository_root(args.root)
+    path, state = load_state(root, args.id)
+    if state["workflow"]["current_stage"] != "requirement_confirmation":
+        raise WorkflowError("Core goals can only be locked during requirement_confirmation.")
+    goals = parse_key_value(args.goal, "goal")
+    if any(not re.fullmatch(r"GOAL-\d{3}", goal_id) for goal_id in goals):
+        raise WorkflowError("Core goal IDs must use GOAL-001 format.")
+    absolute, relative, evidence_hash = indexed_document(root, args.evidence)
+    text = absolute.read_text(encoding="utf-8").lower()
+    if "user" not in text or not any(marker in text for marker in ("confirm", "approved", "确认", "批准")):
+        raise WorkflowError("Core-goal evidence must record explicit user confirmation.")
+    missing_ids = [goal_id for goal_id in goals if goal_id.lower() not in text]
+    if missing_ids:
+        raise WorkflowError("Core-goal evidence is missing IDs: " + ",".join(missing_ids))
+    timestamp = now()
+    state["core_goals"] = {
+        goal_id: {
+            "description": description,
+            "evidence": str(relative),
+            "evidence_sha256": evidence_hash,
+            "confirmed_at": timestamp,
+        }
+        for goal_id, description in goals.items()
+    }
+    state["artifacts"]["core_goals"] = {
+        "path": str(relative),
+        "status": "ready",
+        "evidence_sha256": evidence_hash,
+        "updated_at": timestamp,
+        "notes": "User-confirmed immutable outcome baseline.",
+    }
+    state["core_outcomes"] = {}
+    add_history(state, "core_goals_locked", ",".join(goals))
+    save_state(path, state)
+    print("Locked user-confirmed core goals: " + ",".join(goals))
+
+
+def cmd_register_acceptance_criteria(args: argparse.Namespace) -> None:
+    root = repository_root(args.root)
+    path, state = load_state(root, args.id)
+    if state["workflow"]["current_stage"] != "prd":
+        raise WorkflowError("Acceptance criteria can only be registered during PRD drafting.")
+    prd = state.get("artifacts", {}).get("prd", {})
+    if not artifact_ready(root, state, "prd"):
+        raise WorkflowError("Record the current PRD artifact before registering its criteria.")
+    criteria = parse_key_value(args.criterion, "criterion")
+    if any(not re.fullmatch(r"AC-\d{3}", criterion_id) for criterion_id in criteria):
+        raise WorkflowError("Acceptance criterion IDs must use AC-001 format.")
+    prd_text = (root / str(prd["path"])).read_text(encoding="utf-8").lower()
+    missing_ids = [criterion_id for criterion_id in criteria if criterion_id.lower() not in prd_text]
+    if missing_ids:
+        raise WorkflowError("PRD is missing acceptance criterion IDs: " + ",".join(missing_ids))
+    state["acceptance_criteria"] = {
+        criterion_id: {
+            "description": description,
+            "priority": "must",
+            "prd_sha256": prd["evidence_sha256"],
+            "registered_at": now(),
+        }
+        for criterion_id, description in criteria.items()
+    }
+    state["criterion_verdicts"] = {}
+    add_history(state, "acceptance_criteria_registered", ",".join(criteria))
+    save_state(path, state)
+    print("Registered Must acceptance criteria: " + ",".join(criteria))
+
+
+def next_scope_change_id(state: dict[str, Any]) -> str:
+    numbers = [
+        int(match.group(1))
+        for change in state.get("scope_changes", [])
+        if (match := re.fullmatch(r"SC-(\d+)", str(change.get("id", ""))))
+    ]
+    return f"SC-{max(numbers, default=0) + 1:03d}"
+
+
+def cmd_approve_scope_change(args: argparse.Namespace) -> None:
+    root = repository_root(args.root)
+    path, state = load_state(root, args.id)
+    unknown = [
+        item for item in args.item
+        if item not in state.get("core_goals", {}) and item not in state.get("acceptance_criteria", {})
+    ]
+    if unknown:
+        raise WorkflowError("Scope change references unknown items: " + ",".join(unknown))
+    absolute, relative, evidence_hash = indexed_document(root, args.evidence)
+    text = absolute.read_text(encoding="utf-8").lower()
+    if "user" not in text or not any(marker in text for marker in ("approve", "approved", "批准", "同意")):
+        raise WorkflowError("Scope reduction requires explicit user approval evidence.")
+    if args.approved_by.strip().lower() not in text:
+        raise WorkflowError("Scope-change evidence must name the approving user.")
+    missing_ids = [item for item in args.item if item.lower() not in text]
+    if missing_ids:
+        raise WorkflowError("Scope-change evidence is missing item IDs: " + ",".join(missing_ids))
+    change_id = next_scope_change_id(state)
+    state["scope_changes"].append(
+        {
+            "id": change_id,
+            "status": "approved",
+            "items": list(dict.fromkeys(args.item)),
+            "disposition": args.disposition,
+            "approved_by": args.approved_by.strip(),
+            "reason": args.reason.strip(),
+            "evidence": str(relative),
+            "evidence_sha256": evidence_hash,
+            "approved_at": now(),
+        }
+    )
+    affected_stage = (
+        "requirement_confirmation"
+        if any(item.startswith("GOAL-") for item in args.item)
+        else "prd"
+    )
+    stages = workflow_stages(state)
+    current_stage = state["workflow"]["current_stage"]
+    if (
+        affected_stage in stages
+        and current_stage in stages
+        and stages.index(current_stage) > stages.index(affected_stage)
+    ):
+        old_stage, invalidated_artifacts, invalidated_meetings = rewind_workflow(
+            state,
+            affected_stage,
+            f"User-approved scope change {change_id}",
+            preserve_artifacts={"requirement_confirmation", "core_goals", "prd"},
+        )
+        add_history(state, "change_control_required", f"{change_id}:{old_stage}->{affected_stage}")
+        if invalidated_artifacts:
+            add_history(state, "artifacts_invalidated", ",".join(invalidated_artifacts))
+        if invalidated_meetings:
+            add_history(state, "meetings_invalidated", ",".join(invalidated_meetings))
+    add_history(state, "scope_change_approved", f"{change_id}:{','.join(args.item)}")
+    save_state(path, state)
+    print(f"Recorded user-approved scope change {change_id}")
+
+
+def require_current_source(root: Path, state: dict[str, Any]) -> dict[str, Any]:
+    current = current_source_fingerprint(root)
+    source = state.get("source_revision", {})
+    if source.get("source_tree_sha256") != current["source_tree_sha256"]:
+        raise WorkflowError("Record the current source revision before this evidence.")
+    if current["dirty_paths"]:
+        raise WorkflowError("Source tree has uncommitted changes: " + ",".join(current["dirty_paths"]))
+    return current
+
+
+def cmd_record_source_revision(args: argparse.Namespace) -> None:
+    root = repository_root(args.root)
+    path, state = load_state(root, args.id)
+    if state["workflow"]["mode"] != "strict" or state["workflow"]["current_stage"] != "verification":
+        raise WorkflowError("Source revision binding is required only during strict verification.")
+    absolute, relative, evidence_hash = indexed_document(root, args.evidence)
+    current = current_source_fingerprint(root)
+    if current["dirty_paths"]:
+        raise WorkflowError(
+            "Commit the exact source under verification first: " + ",".join(current["dirty_paths"])
+        )
+    state["source_revision"] = {
+        **current,
+        "evidence": str(relative),
+        "evidence_sha256": evidence_hash,
+        "build_command": args.build_command.strip(),
+        "test_command": args.test_command.strip(),
+        "recorded_at": now(),
+    }
+    state["criterion_verdicts"] = {}
+    state["core_outcomes"] = {}
+    state["journey_validation"] = {}
+    add_history(state, "source_revision_bound", current["git_head"])
+    save_state(path, state)
+    print(f"Bound verification to source revision {current['git_head']}")
+
+
+def cmd_record_criterion_verdict(args: argparse.Namespace) -> None:
+    root = repository_root(args.root)
+    path, state = load_state(root, args.id)
+    if state["workflow"]["current_stage"] != "verification":
+        raise WorkflowError("Criterion verdicts can only be recorded during verification.")
+    if args.criterion_id not in state.get("acceptance_criteria", {}):
+        raise WorkflowError(f"Unknown acceptance criterion: {args.criterion_id}")
+    current = require_current_source(root, state)
+    if args.verdict == "not_applicable" and not scope_change_authorizes(
+        root, state, args.scope_change_id or "", args.criterion_id
+    ):
+        raise WorkflowError("not_applicable requires a matching user-approved scope change.")
+    absolute, relative, evidence_hash = indexed_document(root, args.evidence)
+    text = absolute.read_text(encoding="utf-8").lower()
+    if args.criterion_id.lower() not in text or args.verdict.replace("_", " ") not in text.replace("_", " "):
+        raise WorkflowError("Verdict evidence must identify the criterion and verdict.")
+    state["criterion_verdicts"][args.criterion_id] = {
+        "verdict": args.verdict,
+        "verified_by": "testing",
+        "scope_change_id": args.scope_change_id,
+        "evidence": str(relative),
+        "evidence_sha256": evidence_hash,
+        "source_tree_sha256": current["source_tree_sha256"],
+        "recorded_at": now(),
+    }
+    add_history(state, "criterion_verdict_recorded", f"{args.criterion_id}:{args.verdict}")
+    save_state(path, state)
+    print(f"Recorded testing verdict for {args.criterion_id}: {args.verdict}")
+
+
+def cmd_record_user_journey(args: argparse.Namespace) -> None:
+    root = repository_root(args.root)
+    path, state = load_state(root, args.id)
+    if state["workflow"]["current_stage"] != "verification":
+        raise WorkflowError("Final user-journey validation belongs to verification.")
+    current = require_current_source(root, state)
+    checks = parse_key_value(args.check, "check")
+    unknown = sorted(set(checks) - set(JOURNEY_CHECKS))
+    missing = sorted(set(JOURNEY_CHECKS) - set(checks))
+    if unknown or missing or any(value != "pass" for value in checks.values()):
+        raise WorkflowError(
+            "Every required journey check must be recorded as pass; "
+            f"missing={','.join(missing) or 'none'} unknown={','.join(unknown) or 'none'}"
+        )
+    absolute, relative, evidence_hash = indexed_document(root, args.evidence)
+    text = absolute.read_text(encoding="utf-8").lower()
+    absent = [check for check in JOURNEY_CHECKS if check not in text]
+    if absent:
+        raise WorkflowError("Journey report is missing check sections: " + ",".join(absent))
+    timestamp = now()
+    state["journey_validation"] = {
+        "checks": checks,
+        "verified_by": "testing",
+        "evidence": str(relative),
+        "evidence_sha256": evidence_hash,
+        "source_tree_sha256": current["source_tree_sha256"],
+        "recorded_at": timestamp,
+    }
+    state["artifacts"]["journey_report"] = {
+        "path": str(relative),
+        "status": "ready",
+        "evidence_sha256": evidence_hash,
+        "updated_at": timestamp,
+        "notes": "End-to-end validation against the final source revision.",
+    }
+    add_history(state, "user_journey_verified", current["source_tree_sha256"])
+    save_state(path, state)
+    print("Recorded complete final user-journey validation")
+
+
+def cmd_record_core_outcome(args: argparse.Namespace) -> None:
+    root = repository_root(args.root)
+    path, state = load_state(root, args.id)
+    if state["workflow"]["current_stage"] != "acceptance":
+        raise WorkflowError("Core outcomes can only be assessed during acceptance.")
+    if args.goal_id not in state.get("core_goals", {}):
+        raise WorkflowError(f"Unknown core goal: {args.goal_id}")
+    current = require_current_source(root, state)
+    if args.verdict in {"not_applicable", "deferred"} and not scope_change_authorizes(
+        root, state, args.scope_change_id or "", args.goal_id
+    ):
+        raise WorkflowError("Reduced core outcomes require a matching user-approved scope change.")
+    absolute, relative, evidence_hash = indexed_document(root, args.evidence)
+    text = absolute.read_text(encoding="utf-8").lower()
+    if args.goal_id.lower() not in text or args.verdict.replace("_", " ") not in text.replace("_", " "):
+        raise WorkflowError("Outcome evidence must identify the goal and verdict.")
+    state["core_outcomes"][args.goal_id] = {
+        "verdict": args.verdict,
+        "verified_by": "product",
+        "scope_change_id": args.scope_change_id,
+        "evidence": str(relative),
+        "evidence_sha256": evidence_hash,
+        "source_tree_sha256": current["source_tree_sha256"],
+        "recorded_at": now(),
+    }
+    add_history(state, "core_outcome_recorded", f"{args.goal_id}:{args.verdict}")
+    save_state(path, state)
+    print(f"Recorded product outcome for {args.goal_id}: {args.verdict}")
+
+
 def cmd_record_artifact(args: argparse.Namespace) -> None:
     root = repository_root(args.root)
     path, state = load_state(root, args.id)
@@ -1513,6 +2184,18 @@ def cmd_record_artifact(args: argparse.Namespace) -> None:
         or previous.get("evidence_sha256") != next_hash
         or previous.get("notes", "") != (args.notes or "")
     )
+    if changed and args.name in {"requirement_confirmation", "core_goals"}:
+        state["core_goals"] = {}
+        state["core_outcomes"] = {}
+        state["scope_changes"] = []
+    if changed and args.name == "prd":
+        state["acceptance_criteria"] = {}
+        state["criterion_verdicts"] = {}
+    if changed and args.name in {"implementation", "verification_report", "journey_report"}:
+        state["source_revision"] = {}
+        state["criterion_verdicts"] = {}
+        state["core_outcomes"] = {}
+        state["journey_validation"] = {}
     state.setdefault("artifacts", {})[args.name] = {
         "path": str(relative),
         "status": args.status,
@@ -1575,6 +2258,15 @@ def next_feedback_id(state: dict[str, Any]) -> str:
         if match:
             numbers.append(int(match.group(1)))
     return f"UFB-{max(numbers, default=0) + 1:03d}"
+
+
+def next_delivery_confirmation_id(state: dict[str, Any]) -> str:
+    numbers = []
+    for record in state.get("delivery_confirmation_records", []):
+        match = re.fullmatch(r"DCF-(\d+)", str(record.get("id", "")))
+        if match:
+            numbers.append(int(match.group(1)))
+    return f"DCF-{max(numbers, default=0) + 1:03d}"
 
 
 def cmd_record_user_feedback(args: argparse.Namespace) -> None:
@@ -1644,6 +2336,76 @@ def cmd_record_user_feedback(args: argparse.Namespace) -> None:
     print(
         f"Recorded {feedback_id}: {args.verdict}; "
         f"workflow rewound to {args.affected_stage}"
+    )
+
+
+def cmd_record_delivery_confirmation(args: argparse.Namespace) -> None:
+    root = repository_root(args.root)
+    path, state = load_state(root, args.id)
+    workflow = state["workflow"]
+    if workflow["current_stage"] != "delivery_confirmation":
+        raise WorkflowError(
+            "Delivery confirmation can only be recorded during delivery_confirmation."
+        )
+    evidence_path, relative = repository_evidence_path(
+        root, args.evidence, minimum_chars=MIN_DOCUMENT_CHARS
+    )
+    require_markdown_structure(evidence_path)
+    evidence_text = evidence_path.read_text(encoding="utf-8")
+    for marker in ("user", args.verdict):
+        if not contains_marker(evidence_text, marker):
+            raise WorkflowError(f"Delivery confirmation evidence must identify: {marker}")
+    evidence_hash = content_sha256(evidence_path)
+    confirmation_id = next_delivery_confirmation_id(state)
+    record = {
+        "id": confirmation_id,
+        "verdict": args.verdict,
+        "summary": args.summary.strip(),
+        "affected_stage": args.affected_stage,
+        "evidence": str(relative),
+        "evidence_sha256": evidence_hash,
+        "at": now(),
+    }
+    state.setdefault("delivery_confirmation_records", []).append(record)
+
+    if args.verdict == "approve":
+        if args.affected_stage:
+            raise WorkflowError("Approved delivery must not specify --affected-stage.")
+        state.setdefault("artifacts", {})["delivery_confirmation"] = {
+            "path": str(relative),
+            "status": "ready",
+            "evidence_sha256": evidence_hash,
+            "updated_at": now(),
+            "notes": f"Explicit user delivery approval recorded as {confirmation_id}.",
+        }
+        add_history(state, "delivery_confirmed", confirmation_id)
+        save_state(path, state)
+        print(f"Recorded {confirmation_id}: user approved the verified delivery")
+        return
+
+    affected_stage = args.affected_stage or "implementation"
+    stages = workflow_stages(state)
+    if affected_stage not in stages:
+        raise WorkflowError(f"Affected stage is not enabled in this flow: {affected_stage}")
+    if stages.index(affected_stage) >= stages.index("delivery_confirmation"):
+        raise WorkflowError("Affected stage must be earlier than delivery_confirmation.")
+    old_stage, invalidated_artifacts, invalidated_meetings = rewind_workflow(
+        state,
+        affected_stage,
+        f"Delivery confirmation {confirmation_id}: {args.verdict}",
+    )
+    add_history(
+        state,
+        "delivery_changes_requested",
+        f"{confirmation_id}:{old_stage}->{affected_stage}:{args.verdict}",
+    )
+    if invalidated_artifacts:
+        add_history(state, "artifacts_invalidated", ",".join(invalidated_artifacts))
+    if invalidated_meetings:
+        add_history(state, "meetings_invalidated", ",".join(invalidated_meetings))
+    save_state(path, state)
+    print(
+        f"Recorded {confirmation_id}: {args.verdict}; workflow rewound to {affected_stage}"
     )
 
 
@@ -2070,6 +2832,11 @@ def build_parser() -> argparse.ArgumentParser:
     risk.add_argument("--acceptance", required=True)
     risk.add_argument("--verification", required=True)
     risk.add_argument(
+        "--evidence",
+        required=True,
+        help="Existing repository scope/risk document authored before state registration",
+    )
+    risk.add_argument(
         "--needs-clarification", choices=("auto", "yes", "no"), default="auto"
     )
     risk.add_argument(
@@ -2092,6 +2859,49 @@ def build_parser() -> argparse.ArgumentParser:
     report_risk.add_argument("--evidence", required=True)
     report_risk.set_defaults(func=cmd_report_risk)
 
+    resolve_risk = subparsers.add_parser(
+        "resolve-risk",
+        help="Close a risk with separate resolution evidence and independent verification",
+    )
+    resolve_risk.add_argument("--risk-id", required=True)
+    resolve_risk.add_argument("--resolution", required=True)
+    resolve_risk.add_argument(
+        "--resolved-by",
+        choices=("product", "engineering", "testing", "user", "coordinator"),
+        required=True,
+    )
+    resolve_risk.add_argument(
+        "--verified-by",
+        choices=("product", "engineering", "testing", "user", "coordinator"),
+        required=True,
+    )
+    resolve_risk.add_argument("--evidence", required=True)
+    resolve_risk.set_defaults(func=cmd_resolve_risk)
+
+    withdraw_risk = subparsers.add_parser(
+        "withdraw-risk",
+        help="Withdraw a mistaken risk report with explicit reporter or user evidence",
+    )
+    withdraw_risk.add_argument("--risk-id", required=True)
+    withdraw_risk.add_argument("--reason", required=True)
+    withdraw_risk.add_argument(
+        "--withdrawn-by",
+        choices=("product", "engineering", "testing", "user", "coordinator"),
+        required=True,
+    )
+    withdraw_risk.add_argument("--evidence", required=True)
+    withdraw_risk.set_defaults(func=cmd_withdraw_risk)
+
+    accept_risk = subparsers.add_parser(
+        "accept-escalation-risk",
+        help="Accept a waivable escalation risk with named human evidence and an expiry",
+    )
+    accept_risk.add_argument("--approved-by", required=True)
+    accept_risk.add_argument("--reason", required=True)
+    accept_risk.add_argument("--expires-on", required=True, help="YYYY-MM-DD")
+    accept_risk.add_argument("--evidence", required=True)
+    accept_risk.set_defaults(func=cmd_accept_escalation_risk)
+
     escalate = subparsers.add_parser(
         "escalate-mode",
         help="Apply a user-approved mode escalation and rewind to scope_check",
@@ -2109,6 +2919,75 @@ def build_parser() -> argparse.ArgumentParser:
     artifact.add_argument("--notes")
     artifact.set_defaults(func=cmd_record_artifact)
 
+    goals = subparsers.add_parser(
+        "record-core-goals",
+        help="Lock explicit user-confirmed outcomes before strict design work",
+    )
+    goals.add_argument("--goal", action="append", required=True, help="GOAL-001=outcome")
+    goals.add_argument("--evidence", required=True)
+    goals.set_defaults(func=cmd_record_core_goals)
+
+    criteria = subparsers.add_parser(
+        "register-acceptance-criteria",
+        help="Register Must acceptance criteria from the current PRD",
+    )
+    criteria.add_argument("--criterion", action="append", required=True, help="AC-001=behavior")
+    criteria.set_defaults(func=cmd_register_acceptance_criteria)
+
+    scope_change = subparsers.add_parser(
+        "approve-scope-change",
+        help="Record explicit user authorization to reduce or defer a core goal or criterion",
+    )
+    scope_change.add_argument("--item", action="append", required=True, help="GOAL-001 or AC-001")
+    scope_change.add_argument(
+        "--disposition", choices=("removed", "deferred", "replaced"), required=True
+    )
+    scope_change.add_argument("--approved-by", required=True)
+    scope_change.add_argument("--reason", required=True)
+    scope_change.add_argument("--evidence", required=True)
+    scope_change.set_defaults(func=cmd_approve_scope_change)
+
+    source_revision = subparsers.add_parser(
+        "record-source-revision",
+        help="Bind strict verification to a committed source tree",
+    )
+    source_revision.add_argument("--evidence", required=True)
+    source_revision.add_argument("--build-command", required=True)
+    source_revision.add_argument("--test-command", required=True)
+    source_revision.set_defaults(func=cmd_record_source_revision)
+
+    criterion_verdict = subparsers.add_parser(
+        "record-criterion-verdict",
+        help="Record independent testing verdict for one acceptance criterion",
+    )
+    criterion_verdict.add_argument("--criterion-id", required=True)
+    criterion_verdict.add_argument(
+        "--verdict", choices=("pass", "fail", "blocked", "not_applicable"), required=True
+    )
+    criterion_verdict.add_argument("--scope-change-id")
+    criterion_verdict.add_argument("--evidence", required=True)
+    criterion_verdict.set_defaults(func=cmd_record_criterion_verdict)
+
+    journey = subparsers.add_parser(
+        "record-user-journey",
+        help="Record semantic end-to-end testing against the final source revision",
+    )
+    journey.add_argument("--check", action="append", required=True, help="check_name=pass")
+    journey.add_argument("--evidence", required=True)
+    journey.set_defaults(func=cmd_record_user_journey)
+
+    outcome = subparsers.add_parser(
+        "record-core-outcome",
+        help="Record product assessment of a user-confirmed core goal",
+    )
+    outcome.add_argument("--goal-id", required=True)
+    outcome.add_argument(
+        "--verdict", choices=("satisfied", "not_applicable", "deferred"), required=True
+    )
+    outcome.add_argument("--scope-change-id")
+    outcome.add_argument("--evidence", required=True)
+    outcome.set_defaults(func=cmd_record_core_outcome)
+
     feedback = subparsers.add_parser(
         "record-user-feedback",
         help="Record an explicit user preview verdict and rewind on requested changes",
@@ -2120,6 +2999,18 @@ def build_parser() -> argparse.ArgumentParser:
     feedback.add_argument("--evidence", required=True)
     feedback.add_argument("--affected-stage", choices=tuple(STAGE_LABELS))
     feedback.set_defaults(func=cmd_record_user_feedback)
+
+    delivery = subparsers.add_parser(
+        "record-delivery-confirmation",
+        help="Record explicit user approval or requested changes for a verified micro delivery",
+    )
+    delivery.add_argument(
+        "--verdict", choices=("approve", "request_changes", "reject"), required=True
+    )
+    delivery.add_argument("--summary", required=True)
+    delivery.add_argument("--evidence", required=True)
+    delivery.add_argument("--affected-stage", choices=tuple(STAGE_LABELS))
+    delivery.set_defaults(func=cmd_record_delivery_confirmation)
 
     issue = subparsers.add_parser("add-issue", help="Add a tracked review issue")
     issue.add_argument("--source", choices=("product", "engineering", "testing", "user", "coordinator"), required=True)
@@ -2198,9 +3089,20 @@ def main() -> int:
             "start",
             "assess-risk",
             "report-risk",
+            "resolve-risk",
+            "withdraw-risk",
+            "accept-escalation-risk",
             "escalate-mode",
             "record-artifact",
+            "record-core-goals",
+            "register-acceptance-criteria",
+            "approve-scope-change",
+            "record-source-revision",
+            "record-criterion-verdict",
+            "record-user-journey",
+            "record-core-outcome",
             "record-user-feedback",
+            "record-delivery-confirmation",
             "add-issue",
             "resolve-issue",
             "disposition-issue",
