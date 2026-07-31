@@ -18,6 +18,6 @@
 
 - Product: each confirmed core goal has a current satisfied outcome, or a matching explicit user-approved scope change.
 - Engineering: implementation matches design; checks, deviations, migration, and rollback evidence are complete.
-- Testing: every Must criterion has an independent current-source verdict; the final user journey passes launch, core outcomes, semantic content, interactions, external links, UI quality, release hygiene, and source-of-truth checks; no blocker remains.
+- Testing: every Must criterion has an independent current-source verdict; the final user journey passes launch, core outcomes, semantic content, interactions, external links, UI quality, release hygiene, and source-of-truth checks, with any genuinely inapplicable check recorded as not_applicable and justified in the report; no blocker remains.
 - Engineering: the reviewed source fingerprint matches the committed revision under test; no post-verification source change is hidden.
 - All roles: when preview was enabled, user feedback was explicitly approved or requested changes were incorporated and re-reviewed.

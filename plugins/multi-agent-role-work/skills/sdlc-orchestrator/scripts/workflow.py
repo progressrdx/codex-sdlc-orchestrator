@@ -44,7 +44,7 @@ except ImportError:  # JSON is valid YAML 1.2 and is the dependency-free fallbac
     yaml = None
 
 
-CURRENT_SCHEMA_VERSION = 7
+CURRENT_SCHEMA_VERSION = 8
 WORKFLOW_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{2,80}")
 ROLES = ("product", "engineering", "testing")
 GATES = ("prd_review", "readiness_review", "acceptance")
@@ -304,7 +304,12 @@ def flow_for(mode: str, gate_policy: dict[str, bool] | None = None) -> tuple[str
     stages.extend(("design", "readiness_review"))
     if policy.get("preview"):
         stages.extend(("prototype", "user_feedback"))
-    stages.extend(("implementation", "verification", "acceptance", "completed"))
+    stages.extend(("implementation", "verification", "acceptance"))
+    if not policy.get("preview"):
+        # Without a preview gate the user has no confirmation point in quick mode;
+        # role verdicts must not substitute for an explicit user delivery decision.
+        stages.append("delivery_confirmation")
+    stages.append("completed")
     return tuple(stages)
 
 
@@ -468,7 +473,7 @@ def load_state(root: Path, workflow_id: str | None = None) -> tuple[Path, dict[s
 
 def migrate_state(root: Path, state: dict[str, Any]) -> None:
     version = state.get("schema_version")
-    if version in {1, 2, 3, 4, 5, 6}:
+    if version in {1, 2, 3, 4, 5, 6, 7}:
         state["schema_version"] = CURRENT_SCHEMA_VERSION
         state.setdefault("revision", 0)
         state.setdefault("human_approval_policy", {"required_gates": []})
@@ -490,6 +495,18 @@ def migrate_state(root: Path, state: dict[str, Any]) -> None:
         ):
             configured = workflow.get("flow_stages", [])
             if "delivery_confirmation" not in configured and "completed" in configured:
+                configured.insert(configured.index("completed"), "delivery_confirmation")
+        if (
+            version == 7
+            and workflow.get("mode") == "quick"
+            and workflow.get("status") == "active"
+        ):
+            configured = workflow.get("flow_stages", [])
+            if (
+                "user_feedback" not in configured
+                and "delivery_confirmation" not in configured
+                and "completed" in configured
+            ):
                 configured.insert(configured.index("completed"), "delivery_confirmation")
     state.setdefault("core_goals", {})
     state.setdefault("scope_changes", [])
@@ -860,7 +877,13 @@ def stage_requirements(root: Path, state: dict[str, Any]) -> tuple[list[str], li
                 verdict = verdicts.get(criterion_id, {})
                 if (
                     not fingerprint["source_tree_sha256"]
-                    or not verdict_is_current(root, state, verdict, criterion_id)
+                    or not verdict_is_current(
+                        root,
+                        state,
+                        verdict,
+                        criterion_id,
+                        fingerprint["source_tree_sha256"],
+                    )
                 ):
                     missing.append(f"criterion_verdict:{criterion_id}")
             journey = state.get("journey_validation", {})
@@ -871,7 +894,10 @@ def stage_requirements(root: Path, state: dict[str, Any]) -> tuple[list[str], li
                     str(journey.get("evidence", "")),
                     journey.get("evidence_sha256"),
                 )
-                and all(journey.get("checks", {}).get(check) == "pass" for check in JOURNEY_CHECKS)
+                and all(
+                    journey.get("checks", {}).get(check) in {"pass", "not_applicable"}
+                    for check in JOURNEY_CHECKS
+                )
             ):
                 missing.append("journey_validation:final_user_journey")
         if stage == "acceptance":
@@ -879,7 +905,13 @@ def stage_requirements(root: Path, state: dict[str, Any]) -> tuple[list[str], li
                 outcome = state.get("core_outcomes", {}).get(goal_id, {})
                 if (
                     not fingerprint["source_tree_sha256"]
-                    or not outcome_is_current(root, state, outcome, goal_id)
+                    or not outcome_is_current(
+                        root,
+                        state,
+                        outcome,
+                        goal_id,
+                        fingerprint["source_tree_sha256"],
+                    )
                 ):
                     missing.append(f"core_outcome:{goal_id}")
 
@@ -937,9 +969,14 @@ def scope_change_authorizes(
 
 
 def verdict_is_current(
-    root: Path, state: dict[str, Any], verdict: dict[str, Any], criterion_id: str
+    root: Path,
+    state: dict[str, Any],
+    verdict: dict[str, Any],
+    criterion_id: str,
+    source_hash: str | None = None,
 ) -> bool:
-    source_hash = current_source_fingerprint(root)["source_tree_sha256"]
+    if source_hash is None:
+        source_hash = current_source_fingerprint(root)["source_tree_sha256"]
     if verdict.get("source_tree_sha256") != source_hash or not evidence_matches(
         root, str(verdict.get("evidence", "")), verdict.get("evidence_sha256")
     ):
@@ -952,9 +989,14 @@ def verdict_is_current(
 
 
 def outcome_is_current(
-    root: Path, state: dict[str, Any], outcome: dict[str, Any], goal_id: str
+    root: Path,
+    state: dict[str, Any],
+    outcome: dict[str, Any],
+    goal_id: str,
+    source_hash: str | None = None,
 ) -> bool:
-    source_hash = current_source_fingerprint(root)["source_tree_sha256"]
+    if source_hash is None:
+        source_hash = current_source_fingerprint(root)["source_tree_sha256"]
     if outcome.get("source_tree_sha256") != source_hash or not evidence_matches(
         root, str(outcome.get("evidence", "")), outcome.get("evidence_sha256")
     ):
@@ -2100,9 +2142,11 @@ def cmd_record_user_journey(args: argparse.Namespace) -> None:
     checks = parse_key_value(args.check, "check")
     unknown = sorted(set(checks) - set(JOURNEY_CHECKS))
     missing = sorted(set(JOURNEY_CHECKS) - set(checks))
-    if unknown or missing or any(value != "pass" for value in checks.values()):
+    if unknown or missing or any(
+        value not in {"pass", "not_applicable"} for value in checks.values()
+    ):
         raise WorkflowError(
-            "Every required journey check must be recorded as pass; "
+            "Every required journey check must be recorded as pass or not_applicable; "
             f"missing={','.join(missing) or 'none'} unknown={','.join(unknown) or 'none'}"
         )
     absolute, relative, evidence_hash = indexed_document(root, args.evidence)
@@ -2110,6 +2154,27 @@ def cmd_record_user_journey(args: argparse.Namespace) -> None:
     absent = [check for check in JOURNEY_CHECKS if check not in text]
     if absent:
         raise WorkflowError("Journey report is missing check sections: " + ",".join(absent))
+    waived = sorted(check for check, value in checks.items() if value == "not_applicable")
+    section_names = [check.replace("_", " ") for check in JOURNEY_CHECKS]
+    for check in waived:
+        section = text.split(check, 1)[-1].replace("_", " ")
+        if "not applicable" not in section:
+            raise WorkflowError(
+                f"Journey report must justify the not_applicable check in its section: {check}"
+            )
+        after = section.split("not applicable", 1)[-1]
+        cut = min(
+            (
+                after.find(name)
+                for name in section_names
+                if name != check.replace("_", " ") and name in after
+            ),
+            default=len(after),
+        )
+        if not re.sub(r"[\W_]+", "", after[:cut]):
+            raise WorkflowError(
+                f"Journey report must justify the not_applicable check in its section: {check}"
+            )
     timestamp = now()
     state["journey_validation"] = {
         "checks": checks,
@@ -2129,6 +2194,8 @@ def cmd_record_user_journey(args: argparse.Namespace) -> None:
     add_history(state, "user_journey_verified", current["source_tree_sha256"])
     save_state(path, state)
     print("Recorded complete final user-journey validation")
+    if waived:
+        print("Checks recorded as not_applicable (disclose to the user): " + ",".join(waived))
 
 
 def cmd_record_core_outcome(args: argparse.Namespace) -> None:
@@ -2972,7 +3039,12 @@ def build_parser() -> argparse.ArgumentParser:
         "record-user-journey",
         help="Record semantic end-to-end testing against the final source revision",
     )
-    journey.add_argument("--check", action="append", required=True, help="check_name=pass")
+    journey.add_argument(
+        "--check",
+        action="append",
+        required=True,
+        help="check_name=pass or check_name=not_applicable (with justification in the report)",
+    )
     journey.add_argument("--evidence", required=True)
     journey.set_defaults(func=cmd_record_user_journey)
 

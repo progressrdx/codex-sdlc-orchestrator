@@ -43,7 +43,7 @@ In strict mode, use [core-goals-template.md](assets/core-goals-template.md) at r
 | `implementation` | Spawn a `developer` task with `$sdlc-engineering`. |
 | `verification` | Spawn a `tester` task with `$sdlc-testing`; send confirmed defects to a `developer` task. In strict mode bind the committed source, record every criterion verdict, and record the complete final user journey. |
 | `acceptance` | Spawn all three role tasks with `$sdlc-review`; product checks each confirmed core outcome, tester checks current-source journey evidence, and developer answers technical findings. |
-| `delivery_confirmation` | For `micro`, show the user the verified result, implementation summary, and test evidence; record explicit approval or requested changes with `record-delivery-confirmation`. |
+| `delivery_confirmation` | For `micro` and for `quick` flows without a preview gate, show the user the verified result, implementation summary, and test evidence; record explicit approval or requested changes with `record-delivery-confirmation`. |
 
 Use a role-named subagent task and include the role boundary plus the explicit bundled `$sdlc-*` Skill in its prompt. Project custom agents may be used when available, but the workflow must never depend on them. Never omit the Skill and rely on the task name alone.
 
@@ -62,7 +62,7 @@ Only route stages present in the state's `flow_stages`. In `micro`, assign imple
 - In strict mode, preserve the user's essential outcomes as `GOAL-*`. Do not advance without `record-core-goals`, and never let later roles redefine those goals as mock-only implementation boundaries.
 - Register strict Must criteria from the current PRD. A missing verdict, `fail`, or `blocked` blocks acceptance. `not_applicable`, deferral, removal, or replacement is valid only through `approve-scope-change` with separate explicit user evidence naming the affected IDs.
 - When `user_feedback` is enabled, do not advance until the user has inspected a prototype, MVP, screenshot, demo, or equivalent preview and explicitly approves the direction through `record-user-feedback --verdict approve`.
-- In `micro`, do not complete immediately after verification. Show the result and verification evidence to the user and require `record-delivery-confirmation --verdict approve`; requested changes rewind to implementation by default.
+- In `micro`, and in `quick` when the risk assessment skipped preview, do not complete immediately after verification. Show the result and verification evidence to the user and require `record-delivery-confirmation --verdict approve`; requested changes rewind to implementation by default.
 - If the user rejects the preview, preserve the feedback and reopen to the earliest affected stage instead of continuing toward final verification.
 - Convert every blocking finding into a tracked issue; resolve it only with owner-matched evidence.
 - At acceptance, an open `major` issue also blocks delivery. Resolve it, or record an evidenced `accepted_risk` or `deferred` disposition with the named human authority; deferred issues require a due date.
@@ -71,8 +71,8 @@ Only route stages present in the state's `flow_stages`. In `micro`, assign imple
 - When an indexed artifact changes, the state tool automatically rewinds to its earliest affected stage and supersedes downstream evidence. Treat the returned `change_control_required` event as a required cross-role change-control discussion before rebuilding downstream artifacts.
 - Evidence is live: if an indexed artifact, review, meeting note, or human approval file changes after recording, its hash no longer matches and the gate cannot advance until it is recorded and reviewed again.
 - Strict verification is source-live: call `record-source-revision` only for a committed source tree, then record tester criterion verdicts and all eight final-journey checks against that fingerprint. Any source edit makes them stale and forces re-verification.
-- The final journey must test actual semantics and actions: launch, core outcomes, displayed content, interactions, every external link, UI truncation/overflow/placeholders, removal of debug/mock controls, and the real source of truth. A build, screenshot, source inspection, or prototype approval is insufficient.
-- Never edit `state.yaml` directly. Schema 7 state includes an integrity checksum and unsupported manual edits fail closed.
+- The final journey must test actual semantics and actions: launch, core outcomes, displayed content, interactions, every external link, UI truncation/overflow/placeholders, removal of debug/mock controls, and the real source of truth. A build, screenshot, source inspection, or prototype approval is insufficient. A check that genuinely does not apply to the deliverable may be recorded `not_applicable` only when the journey report justifies it in that check's own section; disclose every waived check to the user.
+- Never edit `state.yaml` directly. Schema 8 state includes an integrity checksum and unsupported manual edits fail closed.
 - Record design coordination as `design_sync`, implementation defects as `defect_triage`, requirement changes as `change_control`, and other cross-role discussions as `ad_hoc`.
 - Never infer `approve` from silence or from an artifact's existence.
 - Never let the implementer substitute for independent test approval.

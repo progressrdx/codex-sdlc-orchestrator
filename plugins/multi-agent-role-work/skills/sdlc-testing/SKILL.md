@@ -33,7 +33,7 @@ Remain independent from the implementer's self-assessment. Use [test-plan-templa
 8. Open every user-facing link or action in an appropriate environment. A hardcoded URL, successful build, or visible button does not prove navigation works.
 9. Inspect displayed values and copy for semantic correctness, unsupported/unknown states, truncation, overflow, stale data, placeholders, mock selectors, debug controls, and error recovery.
 10. Register every Must `AC-*` verdict with the coordinator. `not applicable` is invalid without a matching user-approved scope-change ID.
-11. Produce the final journey report against the same source tree and require all eight journey checks to pass before acceptance.
+11. Produce the final journey report against the same source tree and require all eight journey checks to pass before acceptance; a check that genuinely does not apply to the deliverable may be recorded not applicable only with a written justification in its own report section.
 
 For `micro`, act as a focused independent verifier. Confirm that the implementation stayed inside the recorded task baseline, achieved the observable acceptance result, and passed the stated checks. If coverage is weak, behavior is broader than declared, or verification exposes a systemic problem, stop acceptance, create a substantive risk evidence file, and return its path and exact flags so the coordinator can call `report-risk`. Do not expand the task into a full review ceremony when no new decision or material risk exists.
 

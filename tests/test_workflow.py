@@ -292,6 +292,103 @@ class WorkflowToolTests(unittest.TestCase):
             str(evidence.relative_to(self.root)),
         )
 
+    def reach_strict_verification(self) -> None:
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.root), "config", "user.email", "tests@example.com"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "config", "user.name", "Workflow Tests"],
+            check=True,
+        )
+        source = self.root / "app.py"
+        source.write_text("print('verified')\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.root), "add", "app.py"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "commit", "-qm", "verified source"], check=True)
+
+        self.init("strict")
+        self.complete_discovery()
+        self.record(
+            "prd",
+            "requirements/REQ-test-flow/01-prd.md",
+            text=(
+                "# Product requirements\n\n"
+                "## User outcome\n\nDeliver the confirmed real workflow behavior.\n\n"
+                "## Acceptance criteria\n\nAC-001: The final user journey works with semantically correct data.\n\n"
+                "## Exclusions\n\nNo core goal may be silently replaced by a mock.\n"
+            ),
+        )
+        self.run_tool(
+            "register-acceptance-criteria",
+            "--criterion",
+            "AC-001=The final user journey works with semantically correct data.",
+        )
+        self.run_tool("advance")
+        self.approve("prd_review", ("product", "engineering", "testing"))
+        self.run_tool("advance")
+        self.record("technical_design", "requirements/REQ-test-flow/03-design.md")
+        self.record(
+            "database_design",
+            "requirements/REQ-test-flow/04-database.md",
+            "not_applicable",
+            "No persistence changes are needed.",
+        )
+        self.record("test_plan", "requirements/REQ-test-flow/05-test-plan.md")
+        self.record("release_plan", "requirements/REQ-test-flow/07-release.md")
+        self.run_tool("advance")
+        self.approve("readiness_review", ("product", "engineering", "testing"))
+        human = self.write_artifact(
+            "requirements/REQ-test-flow/approvals/readiness-human.md",
+            "# Human approval: readiness_review\n\n"
+            "Alice reviewed the current role verdicts and meeting record.\n\n"
+            "## Authorization\n\nAlice explicitly records approve for this readiness review.\n",
+        )
+        self.run_tool(
+            "record-human-approval",
+            "--gate",
+            "readiness_review",
+            "--approved-by",
+            "Alice",
+            "--evidence",
+            str(human.relative_to(self.root)),
+        )
+        self.run_tool("advance")
+        self.complete_preview()
+        self.record("implementation", "requirements/REQ-test-flow/06-implementation.md")
+        self.run_tool("advance")
+        self.record("verification_report", "requirements/REQ-test-flow/08-verification.md")
+        source_evidence = self.write_artifact(
+            "requirements/REQ-test-flow/08-source-revision.md",
+            "# Source revision binding\n\n"
+            "## Revision\n\nThe committed working tree is the exact verification target.\n\n"
+            "## Commands\n\nBuild and test commands are recorded in state.\n",
+        )
+        self.run_tool(
+            "record-source-revision",
+            "--evidence",
+            str(source_evidence.relative_to(self.root)),
+            "--build-command",
+            "none",
+            "--test-command",
+            "python -m unittest",
+        )
+        verdict_doc = self.write_artifact(
+            "requirements/REQ-test-flow/08-verdict-ac001.md",
+            "# Verification verdict: AC-001\n\n"
+            "AC-001: pass — the final user journey works with semantically correct data.\n\n"
+            "## Method\n\nIndependent testing executed the recorded test command against the verified source.\n",
+        )
+        self.run_tool(
+            "record-criterion-verdict",
+            "--criterion-id",
+            "AC-001",
+            "--verdict",
+            "pass",
+            "--evidence",
+            str(verdict_doc.relative_to(self.root)),
+        )
+
     def record_gate_meeting(
         self,
         gate: str,
@@ -664,6 +761,7 @@ class WorkflowToolTests(unittest.TestCase):
         self.assertNotIn("requirement_confirmation", state["workflow"]["flow_stages"])
         self.assertNotIn("prototype", state["workflow"]["flow_stages"])
         self.assertNotIn("user_feedback", state["workflow"]["flow_stages"])
+        self.assertIn("delivery_confirmation", state["workflow"]["flow_stages"])
 
     def test_combined_quick_risks_raise_the_minimum_to_standard(self) -> None:
         self.init("auto")
@@ -1386,6 +1484,191 @@ class WorkflowToolTests(unittest.TestCase):
         self.assertIn("artifact:core_goals", blocked.stderr)
         self.assertIn("core_goals:user_confirmed_baseline", blocked.stderr)
 
+    def test_quick_without_preview_requires_user_delivery_confirmation(self) -> None:
+        self.init("quick")
+        self.run_tool("advance")
+        self.assess_risk("quick", clarification="no", confirmation="no", preview="no")
+        self.run_tool("advance")
+        self.record("technical_design", "requirements/REQ-test-flow/03-design.md")
+        self.record("test_plan", "requirements/REQ-test-flow/05-test-plan.md")
+        self.run_tool("advance")
+        self.approve("readiness_review", ("engineering", "testing"))
+        self.run_tool("advance")
+        self.record("implementation", "requirements/REQ-test-flow/06-implementation.md")
+        self.run_tool("advance")
+        self.record("verification_report", "requirements/REQ-test-flow/08-verification.md")
+        self.run_tool("advance")
+        self.record("delivery_report", "requirements/REQ-test-flow/09-delivery.md")
+        self.approve("acceptance", ("product", "engineering", "testing"))
+        advanced = self.run_tool("advance")
+        self.assertIn("acceptance -> delivery_confirmation", advanced.stdout)
+        blocked = self.run_tool("advance", expected=2)
+        self.assertIn("artifact:delivery_confirmation", blocked.stderr)
+
+        self.confirm_delivery()
+        completed = self.run_tool("advance")
+        self.assertIn("delivery_confirmation -> completed", completed.stdout)
+        self.assertFalse((self.root / ".ai-workflow" / "active.yaml").exists())
+
+    def test_v7_quick_without_preview_gains_delivery_confirmation_on_migrate(self) -> None:
+        self.init("quick")
+        self.run_tool("advance")
+        self.assess_risk("quick", clarification="no", confirmation="no", preview="no")
+        state_path = self.root / ".ai-workflow" / "REQ-test-flow" / "state.yaml"
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertIn("delivery_confirmation", state["workflow"]["flow_stages"])
+
+        state["schema_version"] = 7
+        state["workflow"]["flow_stages"] = [
+            stage
+            for stage in state["workflow"]["flow_stages"]
+            if stage != "delivery_confirmation"
+        ]
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        migrated = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual(8, migrated["schema_version"])
+        stages = migrated["workflow"]["flow_stages"]
+        self.assertIn("delivery_confirmation", stages)
+        self.assertEqual(stages.index("completed") - 1, stages.index("delivery_confirmation"))
+
+    def test_strict_flow_reaches_completed_with_na_journey_checks(self) -> None:
+        self.reach_strict_verification()
+        journey_doc = self.write_artifact(
+            "requirements/REQ-test-flow/08-final-journey.md",
+            "# Final user journey validation\n\n"
+            "launch: pass — the CLI workflow initializes and runs against the verified source.\n"
+            "core_outcomes: pass — GOAL-001 delivers the real requested behavior.\n"
+            "content_semantics: pass — command output is semantically correct for users.\n"
+            "interactions: pass — advance and record commands respond as designed.\n"
+            "external_links: not applicable — this deliverable exposes no external links.\n"
+            "ui_quality: not applicable — this deliverable has no graphical user interface.\n"
+            "release_hygiene: pass — the working tree is committed and clean.\n"
+            "source_truth: pass — the verified source hash matches the working tree.\n",
+        )
+        recorded = self.run_tool(
+            "record-user-journey",
+            "--check",
+            "launch=pass",
+            "--check",
+            "core_outcomes=pass",
+            "--check",
+            "content_semantics=pass",
+            "--check",
+            "interactions=pass",
+            "--check",
+            "external_links=not_applicable",
+            "--check",
+            "ui_quality=not_applicable",
+            "--check",
+            "release_hygiene=pass",
+            "--check",
+            "source_truth=pass",
+            "--evidence",
+            str(journey_doc.relative_to(self.root)),
+        )
+        self.assertIn("not_applicable", recorded.stdout)
+        self.assertIn("external_links", recorded.stdout)
+
+        advanced = self.run_tool("advance")
+        self.assertIn("verification -> acceptance", advanced.stdout)
+        self.record("delivery_report", "requirements/REQ-test-flow/09-delivery.md")
+        self.approve("acceptance", ("product", "engineering", "testing"))
+        human = self.write_artifact(
+            "requirements/REQ-test-flow/approvals/acceptance-human.md",
+            "# Human approval: acceptance\n\n"
+            "Alice reviewed the final acceptance evidence and meeting record.\n\n"
+            "## Authorization\n\nAlice explicitly records approve for this acceptance gate.\n",
+        )
+        self.run_tool(
+            "record-human-approval",
+            "--gate",
+            "acceptance",
+            "--approved-by",
+            "Alice",
+            "--evidence",
+            str(human.relative_to(self.root)),
+        )
+        outcome_doc = self.write_artifact(
+            "requirements/REQ-test-flow/09-outcome-goal001.md",
+            "# Core outcome: GOAL-001\n\n"
+            "GOAL-001: satisfied — the delivered workflow produces the real requested behavior.\n",
+        )
+        self.run_tool(
+            "record-core-outcome",
+            "--goal-id",
+            "GOAL-001",
+            "--verdict",
+            "satisfied",
+            "--evidence",
+            str(outcome_doc.relative_to(self.root)),
+        )
+        completed = self.run_tool("advance")
+        self.assertIn("acceptance -> completed", completed.stdout)
+        self.assertFalse((self.root / ".ai-workflow" / "active.yaml").exists())
+
+    def test_journey_not_applicable_requires_report_justification(self) -> None:
+        self.reach_strict_verification()
+        unjustified = self.write_artifact(
+            "requirements/REQ-test-flow/08-journey-unjustified.md",
+            "# Final user journey validation\n\n"
+            "launch: pass — runs against the verified source.\n"
+            "core_outcomes: pass — GOAL-001 delivers real behavior.\n"
+            "content_semantics: pass — output is semantically correct.\n"
+            "interactions: pass — commands respond as designed.\n"
+            "external_links: pass — links were exercised.\n"
+            "ui_quality: pass — screens were inspected.\n"
+            "release_hygiene: pass — the working tree is clean.\n"
+            "source_truth: pass — hashes match the working tree.\n",
+        )
+        rejected = self.run_tool(
+            "record-user-journey",
+            "--check",
+            "launch=pass",
+            "--check",
+            "core_outcomes=pass",
+            "--check",
+            "content_semantics=pass",
+            "--check",
+            "interactions=pass",
+            "--check",
+            "external_links=pass",
+            "--check",
+            "ui_quality=not_applicable",
+            "--check",
+            "release_hygiene=pass",
+            "--check",
+            "source_truth=pass",
+            "--evidence",
+            str(unjustified.relative_to(self.root)),
+            expected=2,
+        )
+        self.assertIn("must justify the not_applicable check", rejected.stderr)
+
+        invalid = self.run_tool(
+            "record-user-journey",
+            "--check",
+            "launch=pass",
+            "--check",
+            "core_outcomes=pass",
+            "--check",
+            "content_semantics=pass",
+            "--check",
+            "interactions=pass",
+            "--check",
+            "external_links=pass",
+            "--check",
+            "ui_quality=blocked",
+            "--check",
+            "release_hygiene=pass",
+            "--check",
+            "source_truth=pass",
+            "--evidence",
+            str(unjustified.relative_to(self.root)),
+            expected=2,
+        )
+        self.assertIn("pass or not_applicable", invalid.stderr)
+
     def test_direct_state_edit_fails_integrity_check(self) -> None:
         self.init("quick")
         state_path = self.root / ".ai-workflow" / "REQ-test-flow" / "state.yaml"
@@ -1462,7 +1745,7 @@ class WorkflowToolTests(unittest.TestCase):
     def test_state_revision_increments_and_schema_is_validated(self) -> None:
         self.init("quick")
         initial = json.loads(self.run_tool("status", "--json").stdout)
-        self.assertEqual(7, initial["schema_version"])
+        self.assertEqual(8, initial["schema_version"])
         self.assertEqual(1, initial["revision"])
 
         self.run_tool("advance")
@@ -1491,7 +1774,7 @@ class WorkflowToolTests(unittest.TestCase):
         state_path.write_text(json.dumps(state), encoding="utf-8")
 
         migrated = json.loads(self.run_tool("status", "--json").stdout)
-        self.assertEqual(7, migrated["schema_version"])
+        self.assertEqual(8, migrated["schema_version"])
         self.assertNotIn("scope_check", migrated["workflow"]["flow_stages"])
         self.run_tool("advance")
         self.assertIn("Stage: clarification", self.run_tool("status").stdout)
