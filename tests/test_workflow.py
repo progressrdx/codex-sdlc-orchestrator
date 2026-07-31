@@ -370,6 +370,8 @@ class WorkflowToolTests(unittest.TestCase):
                 gate,
                 "--role",
                 role,
+                "--actor-ref",
+                f"{role}-agent",
                 "--verdict",
                 "approve",
                 "--evidence",
@@ -1176,6 +1178,8 @@ class WorkflowToolTests(unittest.TestCase):
             "readiness_review",
             "--role",
             "product",
+            "--actor-ref",
+            "product-agent",
             "--verdict",
             "approve",
             "--evidence",
@@ -1271,17 +1275,42 @@ class WorkflowToolTests(unittest.TestCase):
             "readiness_review",
             "--role",
             "engineering",
+            "--actor-ref",
+            "engineering-agent",
             "--verdict",
             "approve",
             "--evidence",
             str(engineering.relative_to(self.root)),
         )
+        unique_testing = self.write_artifact(
+            "requirements/REQ-test-flow/reviews/testing-unique.md",
+            "# readiness_review testing\n\nThe test plan was reviewed independently.\n\n"
+            "## Findings\n\nNo blocking verification risk remains.\n\n"
+            "## Verdict\n\napprove\n",
+        )
+        reused_actor = self.run_tool(
+            "decide",
+            "--gate",
+            "readiness_review",
+            "--role",
+            "testing",
+            "--actor-ref",
+            "engineering-agent",
+            "--verdict",
+            "approve",
+            "--evidence",
+            str(unique_testing.relative_to(self.root)),
+            expected=2,
+        )
+        self.assertIn("already used by engineering", reused_actor.stderr)
         reused_review = self.run_tool(
             "decide",
             "--gate",
             "readiness_review",
             "--role",
             "testing",
+            "--actor-ref",
+            "testing-agent",
             "--verdict",
             "approve",
             "--evidence",
@@ -1308,6 +1337,8 @@ class WorkflowToolTests(unittest.TestCase):
             "readiness_review",
             "--role",
             "engineering",
+            "--actor-ref",
+            "engineering-agent",
             "--verdict",
             "approve",
             "--evidence",
@@ -1700,6 +1731,73 @@ class WorkflowToolTests(unittest.TestCase):
             "not_applicable",
             final_state["criterion_verdicts"]["AC-001"]["verdict"],
         )
+
+    def test_scope_change_can_rewind_only_the_approved_impact_area(self) -> None:
+        self.init("strict")
+        workflow_module = self.workflow_module()
+        state_path, state = workflow_module.load_state(self.root)
+        state["workflow"]["current_stage"] = "acceptance"
+        state["acceptance_criteria"] = {
+            "AC-001": {
+                "description": "External integration is available.",
+                "priority": "must",
+                "prd_sha256": "test-prd",
+            }
+        }
+        state["artifacts"]["prd"] = {"status": "ready"}
+        state["artifacts"]["implementation"] = {"status": "ready"}
+        state["artifacts"]["journey_report"] = {"status": "ready"}
+        state["criterion_verdicts"] = {
+            "AC-001": {"verdict": "pass", "actor_ref": "tester-agent"}
+        }
+        state["journey_validation"] = {
+            "profile": "api",
+            "checks": {"launch": "pass"},
+        }
+        state["core_outcomes"] = {
+            "GOAL-001": {"verdict": "satisfied"}
+        }
+        state["decisions"]["acceptance"] = {
+            "testing": {"verdict": "approve"},
+        }
+        workflow_module.save_state(state_path, state)
+        approval = self.write_artifact(
+            "requirements/REQ-test-flow/local-scope-change.md",
+            "# Scope change\n\n"
+            "## User approval\n\nUser Alice approved deferring AC-001.\n\n"
+            "## Impact analysis\n\nThe approved earliest affected stage is verification; "
+            "the PRD, design, and implementation remain valid.\n\n"
+            "## Decision\n\nAC-001 is not applicable for this delivery.\n",
+        )
+        self.run_tool(
+            "approve-scope-change",
+            "--item",
+            "AC-001",
+            "--disposition",
+            "deferred",
+            "--approved-by",
+            "Alice",
+            "--reason",
+            "External service is unavailable.",
+            "--impact-stage",
+            "verification",
+            "--impact-reason",
+            "Only verification and later acceptance evidence depends on the integration.",
+            "--evidence",
+            str(approval.relative_to(self.root)),
+        )
+        _, changed = workflow_module.load_state(self.root)
+        self.assertEqual("verification", changed["workflow"]["current_stage"])
+        self.assertEqual("ready", changed["artifacts"]["prd"]["status"])
+        self.assertEqual("ready", changed["artifacts"]["implementation"]["status"])
+        self.assertEqual("superseded", changed["artifacts"]["journey_report"]["status"])
+        self.assertNotIn("acceptance", changed["decisions"])
+        self.assertEqual({}, changed["criterion_verdicts"])
+        self.assertEqual({}, changed["journey_validation"])
+        self.assertEqual({}, changed["core_outcomes"])
+        scope_change = changed["scope_changes"][-1]
+        self.assertEqual("prd", scope_change["baseline_stage"])
+        self.assertEqual("verification", scope_change["impact_stage"])
 
     def test_reopen_invalidates_downstream_gate_decisions(self) -> None:
         self.init()

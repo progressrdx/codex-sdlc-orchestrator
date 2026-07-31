@@ -21,4 +21,4 @@ Review only gates present in the state's enabled `flow_stages`. Do not create mi
 8. Reject any attempt to convert a confirmed core goal or Must criterion to deferred, replaced, mock-only, or not applicable without a matching user-approved scope-change record.
 9. At acceptance, bind the review to the recorded source revision and final journey report. Reject stale verification, post-test source edits, untested links, semantically wrong content, visible placeholders/debug controls, or a goal-level outcome that is not satisfied.
 
-Return the material position, evidence, disagreements, required actions, and verdict in a form the coordinator can summarize without inventing discussion. The coordinator, not the reviewer, creates the cross-role meeting notes and records the final state transition.
+Return the material position, evidence, disagreements, required actions, verdict, and the canonical task/session reference supplied by the runtime. The coordinator records that reference as `--actor-ref`; it must not reuse one role task as another role. The coordinator, not the reviewer, creates the cross-role meeting notes and records the final state transition.

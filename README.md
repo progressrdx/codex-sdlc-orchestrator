@@ -97,6 +97,10 @@ The manifest contains the reviewed source paths, actual build and test commands,
 
 Enabled PRD review, readiness review, and acceptance gates require independent role verdicts plus current meeting notes covering all required roles. Unresolved blockers prevent the workflow from advancing. When preview is enabled, explicit user approval is required before implementation. A user `request_changes` or `reject` verdict is preserved and automatically rewinds the workflow to the affected stage.
 
+Each role verdict carries a distinct Codex task/session reference. The reference is included in meeting and human-approval snapshots, preventing accidental use of one role task for multiple approvals. This provides traceability, not cryptographic proof of identity.
+
+User-approved scope reductions remain conservative by default, but they can include an evidenced earliest impact stage. For example, deferring one external `AC-*` during acceptance can rewind only to verification when the user-approved record explains why the PRD, design, and implementation remain valid.
+
 Workflow state uses:
 
 - Schema validation and migration from schema v1.
@@ -111,6 +115,8 @@ Workflow state uses:
 - Evidence-backed automatic escalation recommendations that block unsafe continuation until the user approves a higher mode.
 - First-class user feedback decisions: approve, request changes, or reject.
 - Formal major-issue disposition: acceptance blocks on open major findings unless a named authority records an evidenced risk acceptance or scheduled deferral.
+- Impact-scoped change control with conservative fallback.
+- Distinct role task/session references bound into gate snapshots.
 
 These are local consistency controls, not identity authentication or tamper-proof audit guarantees. See [SECURITY.md](SECURITY.md) and [THREAT_MODEL.md](THREAT_MODEL.md).
 
@@ -139,4 +145,4 @@ python3 -m unittest discover -s tests -v
 python3 /path/to/plugin-creator/scripts/validate_plugin.py plugins/multi-agent-role-work
 ```
 
-The workflow state tool is a delivery-integrity guard, not an identity or security system. Independent role agents and evidence-based reviews provide the practical separation of responsibilities.
+The workflow state tool is a delivery-integrity guard, not an identity or security system. Task/session references improve traceability, while independent role agents and evidence-based reviews provide the practical separation of responsibilities.

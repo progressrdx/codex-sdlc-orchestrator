@@ -6,13 +6,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import re
 import subprocess
 import sys
-import tempfile
-import time
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -28,21 +24,15 @@ from risk_policy import (
     refresh_escalation,
 )
 from source_policy import SourcePolicyError, source_binding
-
-try:
-    import fcntl  # type: ignore
-except ImportError:  # pragma: no cover - Windows fallback is exercised on Windows.
-    fcntl = None
-
-try:
-    import msvcrt  # type: ignore
-except ImportError:  # pragma: no cover - POSIX uses fcntl.
-    msvcrt = None
-
-try:
-    import yaml  # type: ignore
-except ImportError:  # JSON is valid YAML 1.2 and is the dependency-free fallback.
-    yaml = None
+from state_store import (
+    WorkflowError,
+    atomic_write_text,
+    load_data,
+    save_data,
+    state_checksum,
+    verify_state_checksum,
+    workflow_lock,
+)
 
 
 CURRENT_SCHEMA_VERSION = 8
@@ -321,10 +311,6 @@ STAGE_GUIDANCE = {
     "completed": "No next workflow action is required.",
 }
 
-class WorkflowError(RuntimeError):
-    pass
-
-
 def now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -370,112 +356,6 @@ def repository_root(explicit: str | None = None) -> Path:
     return Path.cwd().resolve()
 
 
-def load_data(path: Path) -> dict[str, Any]:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError as exc:
-        raise WorkflowError(f"State file not found: {path}") from exc
-    try:
-        data = yaml.safe_load(text) if yaml else json.loads(text)
-    except (ValueError, yaml.YAMLError if yaml else ValueError) as exc:
-        raise WorkflowError(f"Cannot parse state file {path}: {exc}") from exc
-    if not isinstance(data, dict):
-        raise WorkflowError(f"Invalid mapping in {path}")
-    return data
-
-
-def state_checksum(state: dict[str, Any]) -> str:
-    """Hash semantic state so unsupported direct edits fail closed."""
-    payload = {key: value for key, value in state.items() if key != "state_checksum"}
-    rendered = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
-
-
-def verify_state_checksum(state: dict[str, Any], path: Path) -> None:
-    if state.get("schema_version") != CURRENT_SCHEMA_VERSION:
-        return
-    expected = state.get("state_checksum")
-    if not isinstance(expected, str) or expected != state_checksum(state):
-        raise WorkflowError(
-            f"Workflow state integrity check failed for {path}. "
-            "Do not edit state.yaml directly; use workflow commands."
-        )
-
-
-def atomic_write_text(path: Path, rendered: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        dir=path.parent,
-        text=True,
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(rendered)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        try:
-            directory = os.open(path.parent, os.O_RDONLY)
-        except OSError:
-            return
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def save_data(path: Path, data: dict[str, Any]) -> None:
-    if yaml:
-        rendered = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
-    else:
-        rendered = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
-    atomic_write_text(path, rendered)
-
-
-@contextmanager
-def workflow_lock(root: Path) -> Any:
-    lock_key = hashlib.sha256(str(root).encode("utf-8")).hexdigest()
-    lock_path = Path(tempfile.gettempdir()) / "multi-agent-role-work-locks" / f"{lock_key}.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-    timeout = float(os.environ.get("SDLC_LOCK_TIMEOUT", "5"))
-    deadline = time.monotonic() + max(timeout, 0)
-    acquired = False
-    try:
-        while not acquired:
-            try:
-                if fcntl is not None:
-                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                elif msvcrt is not None:  # pragma: no cover - Windows only.
-                    if os.fstat(descriptor).st_size == 0:
-                        os.write(descriptor, b"\0")
-                    os.lseek(descriptor, 0, os.SEEK_SET)
-                    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
-                else:  # pragma: no cover - supported Python platforms provide one.
-                    raise WorkflowError("No supported file-lock implementation is available.")
-                acquired = True
-            except (BlockingIOError, OSError):
-                if time.monotonic() >= deadline:
-                    raise WorkflowError(
-                        "Another workflow update is in progress. Retry after it completes."
-                    )
-                time.sleep(0.05)
-        yield
-    finally:
-        if acquired:
-            if fcntl is not None:
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
-            elif msvcrt is not None:  # pragma: no cover - Windows only.
-                os.lseek(descriptor, 0, os.SEEK_SET)
-                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-        os.close(descriptor)
-
-
 def active_pointer(root: Path) -> Path:
     return root / ".ai-workflow" / "active.yaml"
 
@@ -509,7 +389,7 @@ def state_path(root: Path, workflow_id: str | None = None) -> Path:
 def load_state(root: Path, workflow_id: str | None = None) -> tuple[Path, dict[str, Any]]:
     path = state_path(root, workflow_id)
     state = load_data(path)
-    verify_state_checksum(state, path)
+    verify_state_checksum(state, path, CURRENT_SCHEMA_VERSION)
     migrate_state(root, state)
     validate_state(state, path)
     return path, state
@@ -716,7 +596,11 @@ def required_gate_roles(state: dict[str, Any], gate: str) -> tuple[str, ...]:
 def gate_decision_snapshot(state: dict[str, Any], gate: str) -> dict[str, str]:
     decisions = state.get("decisions", {}).get(gate, {})
     return {
-        role: f"{decision.get('verdict', '')}:{decision.get('evidence_sha256', '')}"
+        role: (
+            f"{decision.get('verdict', '')}:"
+            f"{decision.get('evidence_sha256', '')}:"
+            f"{decision.get('actor_ref', '')}"
+        )
         for role, decision in sorted(decisions.items())
     }
 
@@ -726,8 +610,12 @@ def gate_meeting_ready(root: Path, state: dict[str, Any], gate: str) -> bool:
 
 
 def decision_is_current(root: Path, decision: dict[str, Any]) -> bool:
-    return evidence_matches(
-        root, str(decision.get("evidence", "")), decision.get("evidence_sha256")
+    return (
+        decision.get("verdict") in {"approve", "reject"}
+        and bool(str(decision.get("actor_ref", "")).strip())
+        and evidence_matches(
+            root, str(decision.get("evidence", "")), decision.get("evidence_sha256")
+        )
     )
 
 
@@ -834,6 +722,14 @@ def rewind_workflow(
             approval["status"] = "superseded"
             approval["superseded_at"] = now()
             approval["superseded_reason"] = reason
+
+    if "implementation" in stages and rewind_index <= stages.index("implementation"):
+        state["source_revision"] = {}
+    if "verification" in stages and rewind_index <= stages.index("verification"):
+        state["criterion_verdicts"] = {}
+        state["journey_validation"] = {}
+    if "acceptance" in stages and rewind_index <= stages.index("acceptance"):
+        state["core_outcomes"] = {}
 
     invalidated_artifacts: list[str] = []
     for name, produced_at in ARTIFACT_STAGE.items():
@@ -1171,7 +1067,7 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
                 f"Workflow state changed concurrently: expected revision "
                 f"{expected_revision}, found {actual_revision}."
             )
-        verify_state_checksum(on_disk, path)
+        verify_state_checksum(on_disk, path, CURRENT_SCHEMA_VERSION)
         save_data(path.with_name("state.backup.yaml"), on_disk)
     state["schema_version"] = CURRENT_SCHEMA_VERSION
     state["revision"] = expected_revision + 1
@@ -1878,7 +1774,7 @@ def cmd_audit_state(args: argparse.Namespace) -> None:
     if backup_path.exists():
         try:
             backup = load_data(backup_path)
-            verify_state_checksum(backup, backup_path)
+            verify_state_checksum(backup, backup_path, CURRENT_SCHEMA_VERSION)
             validate_state(backup, backup_path)
             backup_valid = True
             backup_revision = int(backup.get("revision", 0))
@@ -1924,7 +1820,7 @@ def cmd_repair_state(args: argparse.Namespace) -> None:
     path = state_path(root, args.id)
     backup_path = path.with_name("state.backup.yaml")
     backup = load_data(backup_path)
-    verify_state_checksum(backup, backup_path)
+    verify_state_checksum(backup, backup_path, CURRENT_SCHEMA_VERSION)
     validate_state(backup, backup_path)
     try:
         current_revision = int(load_data(path).get("revision", 0))
@@ -2070,6 +1966,44 @@ def next_scope_change_id(state: dict[str, Any]) -> str:
     return f"SC-{max(numbers, default=0) + 1:03d}"
 
 
+def scope_change_impact(
+    state: dict[str, Any],
+    items: list[str],
+    requested_stage: str | None,
+    impact_reason: str | None,
+    evidence_text: str,
+) -> tuple[str, str, str]:
+    """Resolve a conservative default or an explicitly evidenced local rewind."""
+    stages = workflow_stages(state)
+    has_goal = any(item.startswith("GOAL-") for item in items)
+    has_criterion = any(item.startswith("AC-") for item in items)
+    baseline_stage = "requirement_confirmation" if has_goal else "prd"
+    latest_safe_stage = "verification" if has_criterion else "acceptance"
+    impact_stage = requested_stage or baseline_stage
+    reason = (impact_reason or "").strip()
+
+    if impact_stage not in stages or impact_stage == "completed":
+        raise WorkflowError(f"Scope-change impact stage is not enabled: {impact_stage}")
+    if baseline_stage not in stages or latest_safe_stage not in stages:
+        raise WorkflowError("Scope-change items are incompatible with the selected workflow flow.")
+    if not (
+        stages.index(baseline_stage)
+        <= stages.index(impact_stage)
+        <= stages.index(latest_safe_stage)
+    ):
+        raise WorkflowError(
+            f"Impact stage must be between {baseline_stage} and {latest_safe_stage}."
+        )
+    if requested_stage:
+        if not reason:
+            raise WorkflowError("--impact-reason is required with --impact-stage.")
+        if impact_stage.lower() not in evidence_text:
+            raise WorkflowError(
+                "Scope-change evidence must name the approved earliest impact stage."
+            )
+    return baseline_stage, impact_stage, reason
+
+
 def cmd_approve_scope_change(args: argparse.Namespace) -> None:
     root = repository_root(args.root)
     path, state = load_state(root, args.id)
@@ -2088,6 +2022,13 @@ def cmd_approve_scope_change(args: argparse.Namespace) -> None:
     missing_ids = [item for item in args.item if item.lower() not in text]
     if missing_ids:
         raise WorkflowError("Scope-change evidence is missing item IDs: " + ",".join(missing_ids))
+    baseline_stage, affected_stage, impact_reason = scope_change_impact(
+        state,
+        args.item,
+        args.impact_stage,
+        args.impact_reason,
+        text,
+    )
     change_id = next_scope_change_id(state)
     state["scope_changes"].append(
         {
@@ -2097,22 +2038,20 @@ def cmd_approve_scope_change(args: argparse.Namespace) -> None:
             "disposition": args.disposition,
             "approved_by": args.approved_by.strip(),
             "reason": args.reason.strip(),
+            "baseline_stage": baseline_stage,
+            "impact_stage": affected_stage,
+            "impact_reason": impact_reason or "Conservative baseline rewind.",
             "evidence": str(relative),
             "evidence_sha256": evidence_hash,
             "approved_at": now(),
         }
-    )
-    affected_stage = (
-        "requirement_confirmation"
-        if any(item.startswith("GOAL-") for item in args.item)
-        else "prd"
     )
     stages = workflow_stages(state)
     current_stage = state["workflow"]["current_stage"]
     if (
         affected_stage in stages
         and current_stage in stages
-        and stages.index(current_stage) > stages.index(affected_stage)
+        and stages.index(current_stage) >= stages.index(affected_stage)
     ):
         old_stage, invalidated_artifacts, invalidated_meetings = rewind_workflow(
             state,
@@ -2828,6 +2767,15 @@ def cmd_decide(args: argparse.Namespace) -> None:
     required_roles = required_gate_roles(state, args.gate)
     if args.role not in required_roles:
         raise WorkflowError(f"Role {args.role} is not a reviewer for {args.gate} in this mode.")
+    actor_ref = args.actor_ref.strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{2,127}", actor_ref):
+        raise WorkflowError("Actor reference must be a stable 3-128 character task or session ID.")
+    for role, decision in state.get("decisions", {}).get(args.gate, {}).items():
+        if role != args.role and decision.get("actor_ref") == actor_ref:
+            raise WorkflowError(
+                f"Actor reference is already used by {role} at {args.gate}; "
+                "independent roles require distinct task/session references."
+            )
     evidence_path, evidence = repository_evidence_path(
         root, args.evidence, minimum_chars=MIN_DOCUMENT_CHARS
     )
@@ -2850,6 +2798,7 @@ def cmd_decide(args: argparse.Namespace) -> None:
     state.setdefault("decisions", {}).setdefault(args.gate, {})[args.role] = {
         "verdict": args.verdict,
         "notes": args.notes or "",
+        "actor_ref": actor_ref,
         "evidence": str(evidence),
         "evidence_sha256": evidence_hash,
         "at": now(),
@@ -3228,6 +3177,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     scope_change.add_argument("--approved-by", required=True)
     scope_change.add_argument("--reason", required=True)
+    scope_change.add_argument(
+        "--impact-stage",
+        choices=tuple(STAGE_LABELS),
+        help="User-approved earliest affected stage; defaults to the conservative baseline.",
+    )
+    scope_change.add_argument(
+        "--impact-reason",
+        help="Why stages before --impact-stage remain valid; required with --impact-stage.",
+    )
     scope_change.add_argument("--evidence", required=True)
     scope_change.set_defaults(func=cmd_approve_scope_change)
 
@@ -3343,6 +3301,11 @@ def build_parser() -> argparse.ArgumentParser:
     decide = subparsers.add_parser("decide", help="Record an independent role verdict at the current gate")
     decide.add_argument("--gate", choices=GATES, required=True)
     decide.add_argument("--role", choices=ROLES, required=True)
+    decide.add_argument(
+        "--actor-ref",
+        required=True,
+        help="Stable subagent task/session reference; provides traceability, not authentication.",
+    )
     decide.add_argument("--verdict", choices=("approve", "reject"), required=True)
     decide.add_argument("--evidence", required=True, help="Unique repository review record for this role and gate")
     decide.add_argument("--notes")

@@ -61,12 +61,14 @@ Only route stages present in the state's `flow_stages`. In `micro`, assign imple
 - Do not advance past `requirement_confirmation` until the user explicitly confirms the synthesized requirement understanding.
 - In strict mode, preserve the user's essential outcomes as `GOAL-*`. Do not advance without `record-core-goals`, and never let later roles redefine those goals as mock-only implementation boundaries.
 - Register strict Must criteria from the current PRD. A missing verdict, `fail`, or `blocked` blocks acceptance. `not_applicable`, deferral, removal, or replacement is valid only through `approve-scope-change` with separate explicit user evidence naming the affected IDs.
+- Scope changes rewind conservatively by default. Use `--impact-stage` only when the approving evidence names the earliest affected stage and `--impact-reason` explains why earlier PRD/design/implementation evidence remains valid. Never choose a stage after verification for an `AC-*` change or after acceptance for a `GOAL-*` change.
 - When `user_feedback` is enabled, do not advance until the user has inspected a prototype, MVP, screenshot, demo, or equivalent preview and explicitly approves the direction through `record-user-feedback --verdict approve`.
 - No mode completes on AI review alone. Show the verified result and evidence to the user and require `record-delivery-confirmation --verdict approve`; requested changes rewind to implementation by default.
 - If the user rejects the preview, preserve the feedback and reopen to the earliest affected stage instead of continuing toward final verification.
 - Convert every blocking finding into a tracked issue; resolve it only with owner-matched evidence.
 - At acceptance, an open `major` issue also blocks delivery. Resolve it, or record an evidenced `accepted_risk` or `deferred` disposition with the named human authority; deferred issues require a due date.
 - After every exchange involving two or more roles, create concise meeting notes that preserve each role's key position, disagreements, decisions, owners, and follow-up actions. Do not store a raw transcript.
+- Record every role verdict with the canonical subagent task/session identifier as `--actor-ref`. The state tool rejects one reference reused by different roles at the same gate and binds the references into meeting and human-approval snapshots. This is traceability, not cryptographic authentication.
 - Record gate meetings only after collecting independent role verdicts. The PRD, readiness, and acceptance gates cannot advance without current meeting notes covering every required role.
 - When an indexed artifact changes, the state tool automatically rewinds to its earliest affected stage and supersedes downstream evidence. Treat the returned `change_control_required` event as a required cross-role change-control discussion before rebuilding downstream artifacts.
 - Evidence is live: if an indexed artifact, review, meeting note, or human approval file changes after recording, its hash no longer matches and the gate cannot advance until it is recorded and reviewed again.
@@ -106,7 +108,7 @@ workflow.py record-artifact --name requirement_confirmation --path docs/requirem
 workflow.py record-core-goals --goal "GOAL-001=User can complete the real target journey" --evidence docs/requirements/.../00-core-goals.md
 workflow.py record-artifact --name prd --path docs/requirements/.../01-prd.md
 workflow.py register-acceptance-criteria --criterion "AC-001=Observable Must behavior"
-workflow.py approve-scope-change --item GOAL-001 --disposition deferred --approved-by "user-name" --reason "..." --evidence docs/requirements/.../changes/SC-001.md
+workflow.py approve-scope-change --item AC-001 --disposition deferred --approved-by "user-name" --reason "..." --impact-stage verification --impact-reason "Earlier design and implementation remain valid" --evidence docs/requirements/.../changes/SC-001.md
 workflow.py record-artifact --name prototype --path docs/requirements/.../07-prototype.md
 workflow.py record-user-feedback --verdict approve --summary "..." --evidence docs/requirements/.../07-user-feedback.md
 workflow.py record-user-feedback --verdict request_changes --affected-stage design --summary "..." --evidence docs/requirements/.../07-user-feedback.md
@@ -119,7 +121,7 @@ workflow.py record-delivery-confirmation --verdict approve --summary "..." --evi
 workflow.py add-issue --source testing --severity blocker --summary "..."
 workflow.py resolve-issue --issue-id ISSUE-001 --resolved-by product --resolution "..." --evidence docs/requirements/.../01-prd.md
 workflow.py disposition-issue --issue-id ISSUE-002 --disposition accepted_risk --approved-by "release-owner" --rationale "..." --evidence docs/requirements/.../decisions/ISSUE-002.md
-workflow.py decide --gate prd_review --role testing --verdict approve --evidence docs/requirements/.../reviews/prd-testing.md
+workflow.py decide --gate prd_review --role testing --actor-ref tester-task-id --verdict approve --evidence docs/requirements/.../reviews/prd-testing.md
 workflow.py record-meeting --type prd_review --title "PRD review" --participants product,engineering,testing --outcome approved --path docs/requirements/.../meetings/MTG-001-prd-review.md
 workflow.py record-human-approval --gate acceptance --approved-by "release-owner" --evidence docs/requirements/.../approvals/acceptance.md
 workflow.py audit-state
