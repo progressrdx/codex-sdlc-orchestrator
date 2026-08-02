@@ -65,6 +65,21 @@ class PluginPackageTests(unittest.TestCase):
             "workflow.py should remain a shared rules/facade module, not absorb command groups",
         )
 
+    def test_natural_language_entrypoint_is_packaged(self) -> None:
+        orchestrator = PLUGIN / "skills" / "sdlc-orchestrator"
+        skill = (orchestrator / "SKILL.md").read_text(encoding="utf-8")
+        contract = (orchestrator / "references" / "workflow-contract.md").read_text(
+            encoding="utf-8"
+        )
+        agent = (orchestrator / "agents" / "openai.yaml").read_text(
+            encoding="utf-8"
+        )
+
+        for content in (skill, contract, agent):
+            self.assertIn("团队开发", content)
+        self.assertIn("merely discusses team development", skill)
+        self.assertIn("$sdlc-orchestrator", agent)
+
 
 if __name__ == "__main__":
     unittest.main()

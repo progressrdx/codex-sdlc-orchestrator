@@ -1,7 +1,7 @@
 {
   "name": "multi-agent-role-work",
-  "version": "2.3.0+codex.20260731132413",
-  "description": "An acceptance-ready modular SDLC workflow with atomic reviews, scoped verification and change control, explicit user delivery approval, and recoverable state.",
+  "version": "2.4.0+codex.20260802143124",
+  "description": "Start formal multi-role delivery with a simple Team Development request, then apply adaptive modes, review gates, scoped verification, and explicit user approval.",
   "author": {
     "name": "progressrdx",
     "url": "https://github.com/progressrdx"
@@ -19,7 +19,7 @@
   "interface": {
     "displayName": "Multi-Role SDLC",
     "shortDescription": "Risk-adaptive product, engineering, and testing workflow.",
-    "longDescription": "Run a formal software delivery workflow in any project without copying project files. The orchestrator performs evidence-backed requirement and risk triage, selects the lowest safe micro, quick, standard, or strict flow, locks user-confirmed core outcomes, atomically records complete role-gate reviews and strict verification bundles, supports user-approved impact-scoped change control with conservative fallback, requires profile-appropriate semantic final-user-journey checks, binds distinct role task references into gate snapshots, requires final user delivery approval in every mode, and preserves recoverable checksummed state, human authorization checkpoints, and structured meeting records.",
+    "longDescription": "Start with an actionable Team Development request in any project; no workflow command knowledge is required. The orchestrator opens discovery rather than coding, performs evidence-backed requirement and risk triage, selects the lowest safe micro, quick, standard, or strict flow, locks user-confirmed core outcomes, atomically records complete role-gate reviews and strict verification bundles, supports user-approved impact-scoped change control with conservative fallback, requires profile-appropriate semantic final-user-journey checks, binds distinct role task references into gate snapshots, requires final user delivery approval in every mode, and preserves recoverable checksummed state, human authorization checkpoints, and structured meeting records.",
     "developerName": "progressrdx",
     "category": "Productivity",
     "capabilities": [
@@ -39,7 +39,7 @@
       "Documented assurance boundaries"
     ],
     "defaultPrompt": [
-      "\u542f\u52a8\u7814\u53d1\u6d41\u7a0b\uff1a\u63cf\u8ff0\u4f60\u7684\u9700\u6c42\uff0c\u6211\u4f1a\u5148\u68c0\u67e5\u9700\u6c42\u7f3a\u53e3\u548c\u98ce\u9669\uff0c\u518d\u63a8\u8350\u5408\u9002\u6d41\u7a0b\u3002",
+      "\u56e2\u961f\u5f00\u53d1\uff1a\u63cf\u8ff0\u4f60\u7684\u9700\u6c42\u3002\u6211\u4f1a\u5148\u68c0\u67e5\u9700\u6c42\u7f3a\u53e3\u548c\u98ce\u9669\uff0c\u4e0d\u4f1a\u76f4\u63a5\u5f00\u59cb\u7f16\u7801\u3002",
       "\u7ee7\u7eed\u5f53\u524d\u6b63\u5f0f\u7814\u53d1\u6d41\u7a0b\u3002",
       "\u67e5\u770b\u5f53\u524d\u7814\u53d1\u6d41\u7a0b\u72b6\u6001\u548c\u963b\u585e\u9879\u3002"
     ]

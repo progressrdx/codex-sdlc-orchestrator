@@ -1,4 +1,4 @@
 interface:
-  display_name: "SDLC Coordinator"
-  short_description: "Triage risk and route the right SDLC workflow"
-  default_prompt: "Use $sdlc-orchestrator to assess scope and risk, then start or continue the appropriate formal multi-role workflow."
+  display_name: "Team Development Coordinator"
+  short_description: "Start team delivery with requirement discovery"
+  default_prompt: "Use $sdlc-orchestrator for this request: 团队开发：实现会员积分过期功能。"

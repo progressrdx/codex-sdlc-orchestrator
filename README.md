@@ -17,13 +17,21 @@ Start a new Codex task after installation. The plugin is then available in every
 Open the project in Codex and say:
 
 ```text
-启动标准研发流程：实现会员积分过期功能。
+团队开发：实现会员积分过期功能。
 ```
 
-The natural-language phrase is enough to open the workflow, but it is not treated as permission to build. The coordinator records the original request, performs a structured requirement-gap and risk check, and recommends the lowest safe workflow mode before PRD, design, or code. It always checks for missing details; it asks the user only when an unresolved choice can materially change the result. `$sdlc-orchestrator` remains available when an explicit Skill invocation is preferred:
+`团队开发：<需求>` is the recommended entry. It opens requirement discovery, not implementation authorization. The coordinator records the text after the prefix as the original request, performs a structured requirement-gap and risk check, and recommends the lowest safe workflow mode before PRD, design, or code. It always checks for missing details; it asks the user only when an unresolved choice can materially change the result.
+
+The prefix must introduce an actionable request. A discussion such as “团队开发和个人开发有什么区别” does not activate the workflow. `$sdlc-orchestrator` remains available as the advanced explicit entry:
 
 ```text
-使用 $sdlc-orchestrator 启动标准研发流程：实现会员积分过期功能。
+使用 $sdlc-orchestrator 开发会员积分过期功能。
+```
+
+You may also name a minimum mode when you already know the assurance level you need:
+
+```text
+团队开发（strict）：执行用户数据迁移，并在就绪评审和最终验收时由我人工批准。
 ```
 
 To inspect or continue:
@@ -36,12 +44,14 @@ To inspect or continue:
 
 Those progress checks use the workflow `overview`, which summarizes the active stage, whether the gate can advance, missing evidence, open issues, meeting records, and human approval checkpoints.
 
+Short continuation phrases work only when `.ai-workflow/active.yaml` exists. Without an active workflow, “继续” or “开始验收” alone never creates one.
+
 Ordinary coding, explanation, and isolated-fix requests do not activate the formal workflow.
 
-For a high-risk requirement, ask for human checkpoints explicitly:
+For a high-risk requirement, you can ask for human checkpoints without naming a mode; risk assessment may still recommend `strict`:
 
 ```text
-启动严格研发流程，并要求在就绪评审和最终验收时由我人工批准：执行用户数据迁移。
+团队开发：执行用户数据迁移，并要求在就绪评审和最终验收时由我人工批准。
 ```
 
 The coordinator pauses at each configured checkpoint. AI role approvals never substitute for the named human authority.

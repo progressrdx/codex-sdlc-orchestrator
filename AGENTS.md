@@ -4,7 +4,7 @@ This repository contains a Codex-native, multi-role SDLC workflow.
 
 ## Formal workflow activation
 
-- Start the formal process only when the user explicitly asks to start it or invokes `$sdlc-orchestrator`.
+- Start the formal process only when the user gives an actionable `团队开发：<request>` prompt, explicitly asks for a formal/multi-role development process, or invokes `$sdlc-orchestrator`. Merely discussing team development does not activate it.
 - Continue it only when `.ai-workflow/active.yaml` exists and the user is referring to that active requirement.
 - Do not apply the formal process to ordinary questions, isolated fixes, explanations, or casual planning.
 - Keep coordination lightweight. Role Skills have implicit invocation disabled; the coordinator must name them explicitly in delegated prompts.

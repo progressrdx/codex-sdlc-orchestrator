@@ -2,7 +2,7 @@
 
 ## Activation
 
-The formal workflow starts only from an explicit user request. An active workflow continues when `.ai-workflow/active.yaml` exists and the user asks to continue or change that requirement. Ordinary questions and isolated edits stay outside the workflow.
+The formal workflow starts only from an explicit user request. The recommended entry is an actionable `团队开发：<request>` prompt; the text after the prefix becomes the original request and opens discovery only. Explicit requests to start a formal or multi-role development process and direct `$sdlc-orchestrator` invocation are equivalent advanced entries. Merely discussing team development does not activate the workflow. An active workflow continues when `.ai-workflow/active.yaml` exists and the user asks to continue, inspect, change, or accept that requirement. Without active state, short continuation phrases do not create a workflow. Ordinary questions and isolated edits stay outside the workflow.
 
 Use `start --request "..." --mode auto` as the default initialization path for natural-language requests. It captures the original request, derives a usable title when none is supplied, and prints the same progress summary that `overview` returns later. Starting a workflow opens scope and risk analysis; it does not authorize PRD, design, or coding.
 

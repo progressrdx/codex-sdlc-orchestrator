@@ -1,6 +1,6 @@
 ---
 name: sdlc-orchestrator
-description: Coordinate an explicit, formal multi-role software delivery workflow with persistent state and review gates. Use only when the user asks to start, continue, inspect, reopen, or manage the formal SDLC workflow, or when an active `.ai-workflow/active.yaml` exists and the user is continuing that workflow. Do not use for ordinary coding, explanations, isolated fixes, or casual planning without an active workflow.
+description: Coordinate an explicit formal multi-role software delivery workflow with persistent state and review gates. Use when the user starts an actionable request with `团队开发：` (team development), explicitly asks to start or manage a formal/multi-role SDLC workflow, invokes `$sdlc-orchestrator`, or continues an active `.ai-workflow/active.yaml` requirement. Do not use when the user merely discusses team development, asks an ordinary question, or requests an isolated fix without explicitly choosing the workflow.
 ---
 
 # Coordinate the SDLC workflow
@@ -11,10 +11,13 @@ Keep the main thread focused on business decisions, state transitions, and synth
 
 1. Locate the repository root.
 2. Resolve this Skill's own directory from the loaded `SKILL.md` path and run `python3 <skill-dir>/scripts/workflow.py --root <repository-root> status`. Never assume the Skill lives inside the target repository.
-3. If no workflow exists and the user explicitly requested the formal process, initialize it with `start --request ... --mode auto` unless the user explicitly chose a mode. Add `--title ...` only when the user gives a better short title. Add `--require-human-approval <gate>` for each configured human checkpoint.
-4. Run `overview` before assigning work or when the user asks where the workflow stands.
-5. Treat `start` as opening scope and risk analysis, not permission to build. Advance from intake to `scope_check`, read [scope-risk-template.md](assets/scope-risk-template.md), and inspect the request and repository before asking questions or selecting a mode.
-6. Do not initialize a formal workflow from an ordinary coding request.
+3. Treat an actionable `团队开发：<request>` prefix as an explicit formal-process request. Pass `<request>` to `start --request` without asking the user to repeat it. Equivalent explicit phrases such as “启动正式研发流程” or “使用多角色流程开发” also qualify. A discussion such as “团队开发和个人开发有什么区别” does not.
+4. If no workflow exists and the user explicitly requested the formal process, initialize it with `start --request ... --mode auto` unless the user explicitly chose a mode. Add `--title ...` only when the user gives a better short title. Add `--require-human-approval <gate>` for each configured human checkpoint.
+5. Treat an explicitly requested mode as a minimum floor. Natural-language requests without a mode always start in `auto`; determine the lowest safe concrete mode during scope analysis.
+6. When an active workflow exists, let short requests such as “继续”, “查看进度”, “修改需求”, or “开始验收” resume or inspect that workflow. Without an active workflow, those phrases alone do not start one.
+7. Run `overview` before assigning work or when the user asks where the workflow stands.
+8. Treat `start` as opening scope and risk analysis, not permission to build. Advance from intake to `scope_check`, read [scope-risk-template.md](assets/scope-risk-template.md), and inspect the request and repository before asking questions or selecting a mode.
+9. Do not initialize a formal workflow from an ordinary coding request.
 
 At `scope_check`, always analyze every `assess-risk --checked-area` category: actors/permissions, goals/scope, business rules/states, data/API effects, failures/edges, compatibility/rollout, subjective choices, and acceptance/verification. This thinking is mandatory; user questions are conditional. If no unresolved high-impact gap exists, record that conclusion and avoid ceremonial questions. Author the complete scope/risk artifact from [scope-risk-template.md](assets/scope-risk-template.md), then register that existing evidence with `assess-risk --evidence`; the state command must not author the assessment. Present the recommendation and reasons, and never select a mode below the deterministic safe minimum. An explicitly requested mode is a floor.
 
