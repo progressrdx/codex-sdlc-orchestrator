@@ -1,7 +1,7 @@
 {
   "name": "multi-agent-role-work",
-  "version": "2.6.0+codex.20260804143217",
-  "description": "Cost-aware formal multi-role delivery with executable verification, pausable routing, and explicit user approval.",
+  "version": "2.6.0+codex.20260804150013",
+  "description": "Cost-aware formal multi-role delivery with executable verification, explicit routing, and user approval.",
   "author": {
     "name": "progressrdx",
     "url": "https://github.com/progressrdx"

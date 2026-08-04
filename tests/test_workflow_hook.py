@@ -55,13 +55,6 @@ class WorkflowHookTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         return json.loads(result.stdout) if result.stdout else {}
 
-    def test_prompt_injects_stage_and_delivery_feedback_rule(self) -> None:
-        output = self.run_hook("prompt", {"prompt": "这个效果不对"})
-        context = output["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("stage=delivery_confirmation", context)
-        self.assertIn("request_changes", context)
-        self.assertIn("$sdlc-orchestrator", context)
-
     def test_product_patch_is_denied_during_delivery_confirmation(self) -> None:
         output = self.run_hook(
             "guard",
@@ -102,35 +95,7 @@ class WorkflowHookTests(unittest.TestCase):
 
     def test_no_active_workflow_is_a_noop(self) -> None:
         (self.root / ".ai-workflow" / "active.yaml").unlink()
-        self.assertEqual({}, self.run_hook("prompt", {"prompt": "ordinary request"}))
-
-    def test_paused_workflow_does_not_inject_prompt_context(self) -> None:
-        state = self.root / ".ai-workflow" / "REQ-hook" / "state.yaml"
-        data = json.loads(state.read_text(encoding="utf-8"))
-        data["workflow"]["status"] = "paused"
-        state.write_text(json.dumps(data), encoding="utf-8")
-        self.assertEqual({}, self.run_hook("prompt", {"prompt": "unrelated question"}))
-
-    def test_paused_workflow_routes_explicit_resume_request(self) -> None:
-        state = self.root / ".ai-workflow" / "REQ-hook" / "state.yaml"
-        data = json.loads(state.read_text(encoding="utf-8"))
-        data["workflow"]["status"] = "paused"
-        state.write_text(json.dumps(data), encoding="utf-8")
-        output = self.run_hook("prompt", {"prompt": "继续当前研发流程"})
-        context = output["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("paused formal SDLC workflow", context)
-        self.assertIn("run resume", context)
-        self.assertIn("$sdlc-orchestrator", context)
-
-    def test_paused_workflow_does_not_route_unrelated_http_status_question(self) -> None:
-        state = self.root / ".ai-workflow" / "REQ-hook" / "state.yaml"
-        data = json.loads(state.read_text(encoding="utf-8"))
-        data["workflow"]["status"] = "paused"
-        state.write_text(json.dumps(data), encoding="utf-8")
-        self.assertEqual(
-            {},
-            self.run_hook("prompt", {"prompt": "What does HTTP status 409 mean?"}),
-        )
+        self.assertEqual({}, self.run_hook("guard", {"tool_input": {}}))
 
     def test_paused_workflow_denies_product_patch_even_at_implementation(self) -> None:
         state = self.root / ".ai-workflow" / "REQ-hook" / "state.yaml"

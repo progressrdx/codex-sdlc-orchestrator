@@ -83,11 +83,16 @@ class PluginPackageTests(unittest.TestCase):
 
     def test_active_workflow_hooks_are_packaged(self) -> None:
         hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text(encoding="utf-8"))
-        self.assertIn("UserPromptSubmit", hooks["hooks"])
+        self.assertNotIn("UserPromptSubmit", hooks["hooks"])
         self.assertIn("PreToolUse", hooks["hooks"])
+        self.assertEqual({"PreToolUse"}, set(hooks["hooks"]))
+        self.assertEqual(
+            "^(apply_patch|Edit|Write)$",
+            hooks["hooks"]["PreToolUse"][0]["matcher"],
+        )
         guard = PLUGIN / "hooks" / "workflow_guard.py"
         self.assertTrue(guard.is_file())
-        self.assertIn("delivery_confirmation", guard.read_text(encoding="utf-8"))
+        self.assertIn("permissionDecision", guard.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

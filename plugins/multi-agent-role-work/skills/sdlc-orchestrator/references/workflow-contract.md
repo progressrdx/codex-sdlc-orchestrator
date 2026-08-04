@@ -6,9 +6,9 @@ The formal workflow starts only from an explicit user request. The recommended e
 
 Use `start --request "..." --mode auto` as the default initialization path for natural-language requests. It captures the original request, derives a usable title when none is supplied, and prints the same progress summary that `overview` returns later. Starting a workflow opens scope and risk analysis; it does not authorize PRD, design, or coding.
 
-On every later prompt that refers to an active requirement, read `overview` before delegating or editing. The installed plugin's `UserPromptSubmit` hook injects the active mode and stage as concise developer context so a follow-up such as “这个结果不对” does not bypass the coordinator. The hook explicitly distinguishes unrelated ordinary questions from active-requirement work.
+On every later prompt explicitly routed to an active requirement, read `overview` before delegating or editing. Routing is on demand through `$sdlc-orchestrator` or clear phrases such as “继续团队开发”, “查看研发进度”, “修改当前需求”, or “开始验收”. The plugin intentionally does not register `UserPromptSubmit`; ordinary conversation never runs workflow code.
 
-`pause` keeps the pointer, stage, and evidence, rejects all delivery mutations until `resume`, and suppresses routing for unrelated prompts. Explicit continue, resume, status, or overview requests receive a small paused-workflow routing hint so recovery does not depend on conversational memory. Use it when the user temporarily switches topics; do not complete or discard a requirement merely to avoid context overhead.
+`pause` keeps the pointer, stage, and evidence and rejects all delivery mutations until `resume`. Resume only from an explicit formal-workflow request such as “继续团队开发”; unrelated prompts remain ordinary conversation because no per-message hook is registered. Use pause when the user temporarily switches topics; do not complete or discard a requirement merely to avoid context overhead.
 
 ## Modes
 
