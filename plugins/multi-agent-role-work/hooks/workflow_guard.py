@@ -21,6 +21,13 @@ except ImportError:  # pragma: no cover - Codex currently bundles PyYAML.
 
 EDIT_STAGES = {"prototype", "implementation"}
 PATCH_PATH = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$", re.MULTILINE)
+PAUSED_WORKFLOW_PROMPT = re.compile(
+    r"(?:继续|恢复|重启|当前.{0,8}(?:流程|需求)|流程.{0,8}(?:状态|进度)|"
+    r"\b(?:resume|continue|restart).{0,20}(?:workflow|development|task)\b|"
+    r"\b(?:workflow|development|task).{0,20}(?:status|overview|resume|continue)\b)",
+    re.IGNORECASE,
+)
+PAUSED_WORKFLOW_SHORT_PROMPTS = {"continue", "resume", "status", "overview"}
 
 
 def load_mapping(path: Path) -> dict[str, Any]:
@@ -30,6 +37,12 @@ def load_mapping(path: Path) -> dict[str, Any]:
     except Exception:  # A lifecycle guard must fail open on malformed external input.
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def paused_prompt_routes(prompt: str) -> bool:
+    return prompt.strip().lower() in PAUSED_WORKFLOW_SHORT_PROMPTS or bool(
+        PAUSED_WORKFLOW_PROMPT.search(prompt)
+    )
 
 
 def active_workflow(cwd: Path) -> tuple[Path, dict[str, Any]] | None:
@@ -49,17 +62,33 @@ def active_workflow(cwd: Path) -> tuple[Path, dict[str, Any]] | None:
             return None
         state = load_mapping(state_path)
         workflow = state.get("workflow")
-        if isinstance(workflow, dict) and workflow.get("status") == "active":
+        if isinstance(workflow, dict) and workflow.get("status") in {"active", "paused"}:
             return candidate.resolve(), state
         return None
     return None
 
 
-def prompt_context(state: dict[str, Any]) -> dict[str, Any]:
+def prompt_context(state: dict[str, Any], prompt: str = "") -> dict[str, Any] | None:
     workflow = state["workflow"]
     stage = str(workflow.get("current_stage", "unknown"))
     mode = str(workflow.get("mode", "unknown"))
     workflow_id = str(workflow.get("id", "unknown"))
+    status = str(workflow.get("status", "active"))
+    if status == "paused":
+        if not paused_prompt_routes(prompt):
+            return None
+        context = (
+            f"A paused formal SDLC workflow exists: {workflow_id}, mode={mode}, stage={stage}. "
+            "This prompt appears to ask about or continue that workflow. Explicitly use "
+            "$sdlc-orchestrator, run overview first, and run resume only because the user explicitly "
+            "asked to continue. Do not infer the stage or discard existing evidence."
+        )
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": context,
+            }
+        }
     context = (
         f"An active formal SDLC workflow exists: {workflow_id}, mode={mode}, stage={stage}. "
         "First classify whether this prompt refers to that requirement. If it does, explicitly use "
@@ -101,7 +130,8 @@ def is_workflow_evidence(root: Path, raw_path: str) -> bool:
 
 def guard_patch(root: Path, state: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any] | None:
     stage = str(state["workflow"].get("current_stage", "unknown"))
-    if stage in EDIT_STAGES:
+    status = str(state["workflow"].get("status", "active"))
+    if status == "active" and stage in EDIT_STAGES:
         return None
     tool_input = payload.get("tool_input", {})
     command = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
@@ -109,7 +139,8 @@ def guard_patch(root: Path, state: dict[str, Any], payload: dict[str, Any]) -> d
     if paths and all(is_workflow_evidence(root, path) for path in paths):
         return None
     reason = (
-        f"Formal SDLC workflow is at '{stage}', where product/source edits are not authorized. "
+        f"Formal SDLC workflow is {status} at '{stage}', where product/source edits are not "
+        "authorized. "
         "Use $sdlc-orchestrator, record the user's decision or finding, and rewind to prototype or "
         "implementation before editing. Workflow evidence under .ai-workflow/ or docs/requirements/ "
         "remains writable."
@@ -136,7 +167,12 @@ def main() -> int:
     if active is None:
         return 0
     root, state = active
-    output = prompt_context(state) if action == "prompt" else guard_patch(root, state, payload)
+    prompt = str(payload.get("prompt") or "")
+    output = (
+        prompt_context(state, prompt)
+        if action == "prompt"
+        else guard_patch(root, state, payload)
+    )
     if output is not None:
         print(json.dumps(output, ensure_ascii=False))
     return 0

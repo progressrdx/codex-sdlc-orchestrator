@@ -8,7 +8,7 @@ Use `start --request "..." --mode auto` as the default initialization path for n
 
 On every later prompt that refers to an active requirement, read `overview` before delegating or editing. The installed plugin's `UserPromptSubmit` hook injects the active mode and stage as concise developer context so a follow-up such as “这个结果不对” does not bypass the coordinator. The hook explicitly distinguishes unrelated ordinary questions from active-requirement work.
 
-`pause` keeps the pointer, stage, and evidence but disables prompt-hook routing and rejects all delivery mutations until `resume`. Use it when the user temporarily switches topics; do not complete or discard a requirement merely to avoid context overhead.
+`pause` keeps the pointer, stage, and evidence, rejects all delivery mutations until `resume`, and suppresses routing for unrelated prompts. Explicit continue, resume, status, or overview requests receive a small paused-workflow routing hint so recovery does not depend on conversational memory. Use it when the user temporarily switches topics; do not complete or discard a requirement merely to avoid context overhead.
 
 ## Modes
 
@@ -83,7 +83,7 @@ Statements such as “implemented”, “tested”, or “approved” require a 
 
 Micro, quick, and standard verification reports bind the current tracked and untracked workspace content while excluding workflow state and requirement evidence. A later product-file change makes that report stale at acceptance and delivery. After rewind, even an unchanged report is accepted only when the deterministic commands actually run successfully against the new source. Strict retains its stronger committed, reviewed-scope Git binding and checks it through final delivery confirmation.
 
-Verification commands are executed by the state tool rather than accepted as strings. Each run is fail-fast, time-bounded, and stored under `.ai-workflow/<id>/test-runs/`; state keeps exit codes, durations, byte counts, output hashes, and the bounded log hash. Passing logs are not model context. A failed run writes diagnostic evidence but does not register the report or advance state.
+Verification commands are executed by the state tool in a disposable repository snapshot rather than accepted as strings. Each run is fail-fast, process-group time-bounded, and stored under `.ai-workflow/<id>/test-runs/`; state keeps sanitized commands, exit codes, durations, byte counts, output hashes, isolation metadata, and the bounded log hash. Output is streamed to disk, common credential formats are redacted from the retained log, and old unreferenced logs are pruned. Passing logs are not model context. A failed run or snapshot product mutation writes diagnostic evidence but does not register the report or advance state. The snapshot prevents ordinary relative writes from touching the original workspace but is not OS isolation; absolute paths, network calls, and external side effects remain within the current user's authority.
 
 The state script is not an authentication boundary. It requires distinct role task/session references and preserves them in downstream snapshots, which provides audit traceability and prevents accidental reuse but does not prove who controlled a session. Enforce reviewer independence operationally by delegating to separate agents, using unique review files, and preserving their unedited findings. Deterministic checks reject missing or trivial evidence but cannot prove that a document is correct.
 

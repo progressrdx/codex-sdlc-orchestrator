@@ -24,8 +24,9 @@ This plugin is a workflow-integrity tool, not an identity, authorization, or san
 
 ## Safe operation
 
-- Review verification shell commands before registration: the state tool executes recorded build/test commands in the repository with the current user's privileges. Use the least privilege needed and never embed credentials in a command.
-- Deterministic test logs are local, size-bounded workflow evidence. Treat them as sensitive, keep `.ai-workflow/` out of Git, and sanitize tools that print credentials or personal data.
+- Review verification shell commands before registration: the state tool executes them with the current user's privileges in a disposable repository snapshot. Relative writes stay in that snapshot, but absolute paths, network calls, external services, and other host side effects are not sandboxed. Use the least privilege needed.
+- Verification refuses absolute symbolic links and relative symbolic links that resolve outside the repository because preserving them would create a write path out of the disposable snapshot.
+- Deterministic logs are streamed, capped at 2 MB, and apply best-effort redaction for common credential formats. Redaction is not a secret scanner. Never embed credentials in commands, keep `.ai-workflow/` out of Git, and sanitize tools that print credentials or personal data.
 - Never copy secrets into PRDs, reviews, meeting notes, workflow state, prompts, or test fixtures.
 - Keep evidence inside the repository; the state tool rejects evidence paths outside it.
 - Require explicit human authorization for destructive data operations, permission changes, production releases, security exceptions, and other irreversible actions.

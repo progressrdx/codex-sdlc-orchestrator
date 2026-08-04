@@ -338,7 +338,9 @@ def cmd_submit_verification(args: argparse.Namespace) -> None:
         root,
         state,
         (("build", build_command), ("test", test_command)),
-        int(source_spec.get("command_timeout", 300)),
+        parse_verification_timeout(source_spec.get("command_timeout", 300)),
+        scope_paths=scope_paths,
+        ignored_paths=ignored_paths,
     )
     after_execution = current_source_fingerprint(root, scope_paths, ignored_paths)
     if after_execution["dirty_paths"] or any(
@@ -418,6 +420,8 @@ def cmd_record_source_revision(args: argparse.Namespace) -> None:
         root,
         state,
         (("build", args.build_command), ("test", args.test_command)),
+        scope_paths=tuple(args.source_path or ()),
+        ignored_paths=tuple(args.ignore_source_path or ()),
     )
     after_execution = current_source_fingerprint(
         root,

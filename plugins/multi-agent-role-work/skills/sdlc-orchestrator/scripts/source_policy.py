@@ -169,12 +169,35 @@ def workspace_binding(
     """
     normalized_ignored = _validate_relative_paths(ignored_paths)
     paths = _workspace_paths(root, normalized_ignored)
+    index_entries: dict[str, bytes] = {}
+    dirty_paths: set[str] = set()
+    try:
+        raw_index = bytes(_git(root, "ls-files", "-s", "-z", binary=True))
+        for entry in raw_index.split(b"\0"):
+            if not entry or b"\t" not in entry:
+                continue
+            relative = entry.split(b"\t", 1)[1].decode(
+                "utf-8", errors="surrogateescape"
+            )
+            if _relevant(relative, normalized_ignored):
+                index_entries[relative] = entry
+        dirty_paths = set(_dirty_paths(root, (), normalized_ignored))
+    except SourcePolicyError:
+        # Non-Git projects retain the dependency-free full-content fallback.
+        index_entries = {}
+        dirty_paths = set(paths)
     digest = hashlib.sha256()
     for relative in paths:
         path = root / relative
         digest.update(relative.encode("utf-8", errors="surrogateescape"))
         digest.update(b"\0")
-        if path.is_symlink():
+        if relative in index_entries and relative not in dirty_paths:
+            # Git status already compared the worktree with the index. Reuse the
+            # index mode/blob identity instead of rereading every clean file.
+            file_hash = hashlib.sha256(
+                b"git-index:" + index_entries[relative]
+            ).hexdigest()
+        elif path.is_symlink():
             payload = ("symlink:" + path.readlink().as_posix()).encode("utf-8")
             file_hash = hashlib.sha256(payload).hexdigest()
         else:

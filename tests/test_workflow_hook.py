@@ -111,6 +111,43 @@ class WorkflowHookTests(unittest.TestCase):
         state.write_text(json.dumps(data), encoding="utf-8")
         self.assertEqual({}, self.run_hook("prompt", {"prompt": "unrelated question"}))
 
+    def test_paused_workflow_routes_explicit_resume_request(self) -> None:
+        state = self.root / ".ai-workflow" / "REQ-hook" / "state.yaml"
+        data = json.loads(state.read_text(encoding="utf-8"))
+        data["workflow"]["status"] = "paused"
+        state.write_text(json.dumps(data), encoding="utf-8")
+        output = self.run_hook("prompt", {"prompt": "继续当前研发流程"})
+        context = output["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("paused formal SDLC workflow", context)
+        self.assertIn("run resume", context)
+        self.assertIn("$sdlc-orchestrator", context)
+
+    def test_paused_workflow_does_not_route_unrelated_http_status_question(self) -> None:
+        state = self.root / ".ai-workflow" / "REQ-hook" / "state.yaml"
+        data = json.loads(state.read_text(encoding="utf-8"))
+        data["workflow"]["status"] = "paused"
+        state.write_text(json.dumps(data), encoding="utf-8")
+        self.assertEqual(
+            {},
+            self.run_hook("prompt", {"prompt": "What does HTTP status 409 mean?"}),
+        )
+
+    def test_paused_workflow_denies_product_patch_even_at_implementation(self) -> None:
+        state = self.root / ".ai-workflow" / "REQ-hook" / "state.yaml"
+        data = json.loads(state.read_text(encoding="utf-8"))
+        data["workflow"]["status"] = "paused"
+        data["workflow"]["current_stage"] = "implementation"
+        state.write_text(json.dumps(data), encoding="utf-8")
+        output = self.run_hook(
+            "guard",
+            {
+                "tool_name": "apply_patch",
+                "tool_input": {"command": "*** Begin Patch\n*** Update File: src/app.py\n*** End Patch"},
+            },
+        )
+        self.assertEqual("deny", output["hookSpecificOutput"]["permissionDecision"])
+        self.assertIn("paused", output["hookSpecificOutput"]["permissionDecisionReason"])
+
 
 if __name__ == "__main__":
     unittest.main()

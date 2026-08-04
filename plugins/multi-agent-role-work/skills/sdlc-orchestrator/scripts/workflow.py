@@ -27,7 +27,12 @@ from risk_commands import invoke as invoke_risk_command
 from review_commands import invoke as invoke_review_command
 from assurance_commands import invoke as invoke_assurance_command
 from delivery_commands import invoke as invoke_delivery_command
-from execution_policy import EXECUTION_POLICIES, execute_verification_commands, repository_context
+from execution_policy import (
+    EXECUTION_POLICIES,
+    execute_verification_commands,
+    parse_verification_timeout,
+    repository_context,
+)
 from source_policy import SourcePolicyError, source_binding, workspace_binding
 from state_store import (
     WorkflowError,
@@ -1119,6 +1124,12 @@ def print_overview(payload: dict[str, Any]) -> None:
     print("Enabled stages: " + " -> ".join(payload["enabled_stages"]))
     policy = payload["execution_policy"]
     print(f"Cost policy: {policy['context']}; {policy['testing']}")
+    print(
+        "Cost budget: recommended role handoffs per stage <= "
+        f"{policy['recommended_max_role_handoffs_per_stage']}; "
+        "verification commands per run <= "
+        f"{policy['max_verification_commands_per_run']} (enforced)"
+    )
     if payload["escalation"].get("status") == "required":
         escalation = payload["escalation"]
         print(
@@ -1601,6 +1612,7 @@ def cmd_record_artifact(args: argparse.Namespace) -> None:
                 if command.strip()
             ),
             args.command_timeout,
+            ignored_paths=ignored_paths,
         )
         try:
             verification_binding = workspace_binding(root, ignored_paths)

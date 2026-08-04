@@ -6,8 +6,10 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 try:
     import fcntl
@@ -760,8 +762,162 @@ class WorkflowToolTests(unittest.TestCase):
             expected=2,
         )
         self.assertIn("changed product files", rejected.stderr)
+        self.assertEqual("original\n", source.read_text(encoding="utf-8"))
         state = json.loads(self.run_tool("status", "--json").stdout)
         self.assertNotIn("verification_report", state["artifacts"])
+
+    def test_failed_mutating_verification_leaves_original_workspace_unchanged(self) -> None:
+        self.init("micro")
+        self.run_tool("advance")
+        self.assess_risk("micro")
+        self.run_tool("advance")
+        source = self.root / "app.py"
+        source.write_text("original\n", encoding="utf-8")
+        self.record("implementation", "requirements/REQ-test-flow/implementation.md")
+        self.run_tool("advance")
+        report = self.write_artifact("requirements/REQ-test-flow/verification-mutating-fail.md")
+        rejected = self.run_tool(
+            "record-artifact",
+            "--name",
+            "verification_report",
+            "--path",
+            str(report.relative_to(self.root)),
+            "--test-command",
+            "echo changed > app.py; exit 7",
+            expected=2,
+        )
+        self.assertIn("changed product files", rejected.stderr)
+        self.assertEqual("original\n", source.read_text(encoding="utf-8"))
+
+    def test_timed_out_verification_terminates_background_processes(self) -> None:
+        self.init("micro")
+        self.run_tool("advance")
+        self.assess_risk("micro")
+        self.run_tool("advance")
+        self.record("implementation", "requirements/REQ-test-flow/implementation.md")
+        self.run_tool("advance")
+        report = self.write_artifact("requirements/REQ-test-flow/verification-timeout.md")
+        marker = self.root / "background-process-survived.txt"
+        timed_out = self.run_tool(
+            "record-artifact",
+            "--name",
+            "verification_report",
+            "--path",
+            str(report.relative_to(self.root)),
+            "--test-command",
+            f"(sleep 2; echo survived > '{marker}') & wait",
+            "--command-timeout",
+            "1",
+            expected=2,
+        )
+        self.assertIn("exited with 124", timed_out.stderr)
+        time.sleep(2)
+        self.assertFalse(marker.exists())
+
+    def test_successful_shell_cannot_leave_background_processes_running(self) -> None:
+        self.init("micro")
+        self.run_tool("advance")
+        self.assess_risk("micro")
+        self.run_tool("advance")
+        self.record("implementation", "requirements/REQ-test-flow/implementation.md")
+        self.run_tool("advance")
+        report = self.write_artifact("requirements/REQ-test-flow/verification-background.md")
+        marker = self.root / "detached-process-survived.txt"
+        self.run_tool(
+            "record-artifact",
+            "--name",
+            "verification_report",
+            "--path",
+            str(report.relative_to(self.root)),
+            "--test-command",
+            f"(sleep 2; echo survived > '{marker}') &",
+        )
+        time.sleep(2)
+        self.assertFalse(marker.exists())
+
+    @unittest.skipUnless(os.name == "posix", "symbolic-link behavior is platform-specific")
+    def test_verification_rejects_symlink_that_escapes_snapshot(self) -> None:
+        self.init("micro")
+        self.run_tool("advance")
+        self.assess_risk("micro")
+        self.run_tool("advance")
+        external = self.root.parent / f"{self.root.name}-external.txt"
+        external.write_text("do not modify\n", encoding="utf-8")
+        (self.root / "external-link.txt").symlink_to(external)
+        try:
+            self.record("implementation", "requirements/REQ-test-flow/implementation.md")
+            self.run_tool("advance")
+            report = self.write_artifact("requirements/REQ-test-flow/verification-symlink.md")
+            rejected = self.run_tool(
+                "record-artifact",
+                "--name",
+                "verification_report",
+                "--path",
+                str(report.relative_to(self.root)),
+                "--test-command",
+                "echo changed > external-link.txt",
+                expected=2,
+            )
+            self.assertIn("symbolic link outside the repository", rejected.stderr)
+            self.assertEqual("do not modify\n", external.read_text(encoding="utf-8"))
+        finally:
+            external.unlink(missing_ok=True)
+
+    def test_verification_log_is_bounded_and_redacts_common_secrets(self) -> None:
+        self.init("micro")
+        self.run_tool("advance")
+        self.assess_risk("micro")
+        self.run_tool("advance")
+        self.record("implementation", "requirements/REQ-test-flow/implementation.md")
+        self.run_tool("advance")
+        report = self.write_artifact("requirements/REQ-test-flow/verification-large.md")
+        self.run_tool(
+            "record-artifact",
+            "--name",
+            "verification_report",
+            "--path",
+            str(report.relative_to(self.root)),
+            "--test-command",
+            "python3 -c \"print('password=do-not-store'); print('x' * 2100000)\"",
+        )
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        execution = state["verification_snapshot"]["test_execution"]
+        self.assertEqual("temporary_snapshot", execution["isolation"])
+        self.assertGreater(execution["commands"][0]["output_bytes"], 2_000_000)
+        self.assertNotIn("do-not-store", execution["commands"][0]["command"])
+        log = self.root / execution["log_path"]
+        self.assertLessEqual(log.stat().st_size, 2_000_000)
+        log_text = log.read_text(encoding="utf-8")
+        self.assertIn("[REDACTED]", log_text)
+        self.assertNotIn("do-not-store", log_text)
+
+    def test_verification_prunes_old_unreferenced_logs(self) -> None:
+        self.init("micro")
+        workflow_module = self.workflow_module()
+        _, state = workflow_module.load_state(self.root)
+        for _ in range(22):
+            workflow_module.execute_verification_commands(
+                self.root,
+                state,
+                (("test", "true"),),
+                10,
+            )
+        logs = list((self.root / ".ai-workflow/REQ-test-flow/test-runs").glob("*.log"))
+        self.assertEqual(20, len(logs))
+
+    def test_workspace_binding_does_not_reread_clean_tracked_files(self) -> None:
+        source = self.initialize_git_source()
+        workflow_module = self.workflow_module()
+        original_read_bytes = Path.read_bytes
+
+        def guarded_read_bytes(path: Path) -> bytes:
+            if path.resolve() == source.resolve():
+                raise AssertionError("clean tracked source was read from disk")
+            return original_read_bytes(path)
+
+        with mock.patch.object(Path, "read_bytes", guarded_read_bytes):
+            binding = workflow_module.workspace_binding(self.root)
+        self.assertEqual(1, binding["file_count"])
 
     def test_quick_triage_can_skip_unneeded_questions_and_preview(self) -> None:
         self.init("quick")
@@ -1768,6 +1924,19 @@ class WorkflowToolTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        invalid_manifest = json.loads(manifest.read_text(encoding="utf-8"))
+        invalid_manifest["source"]["command_timeout"] = "not-a-number"
+        manifest.write_text(json.dumps(invalid_manifest), encoding="utf-8")
+        invalid = self.run_tool(
+            "submit-verification",
+            "--manifest",
+            str(manifest.relative_to(self.root)),
+            expected=2,
+        )
+        self.assertIn("whole number of seconds", invalid.stderr)
+        self.assertNotIn("Traceback", invalid.stderr)
+        invalid_manifest["source"]["command_timeout"] = 300
+        manifest.write_text(json.dumps(invalid_manifest), encoding="utf-8")
         before = json.loads(self.run_tool("status", "--json").stdout)["revision"]
         self.run_tool(
             "submit-verification",

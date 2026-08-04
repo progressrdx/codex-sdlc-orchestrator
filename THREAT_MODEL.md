@@ -31,11 +31,11 @@ An attacker may place instructions in a README, code comment, fixture, generated
 
 ### Fabricated or weakened verification
 
-A developer may modify tests, provide a misleading summary, or manufacture evidence. The state tool executes recorded build/test commands, binds successful exit metadata and a bounded log hash to the tested source, and rejects commands that alter product files. Testing still uses an independent role because an exit code cannot prove that the chosen tests are sufficient. Developer self-test cannot satisfy independent acceptance.
+A developer may modify tests, provide a misleading summary, or manufacture evidence. The state tool executes recorded build/test commands in a disposable repository snapshot, binds successful exit metadata and a bounded log hash to the tested source, and rejects commands that alter product files in that snapshot. Testing still uses an independent role because an exit code cannot prove that the chosen tests are sufficient. Developer self-test cannot satisfy independent acceptance.
 
 ### Verification command execution
 
-A malicious or mistaken command can access anything available to the current user. Commands are explicit workflow inputs, run only during verification, have per-command timeouts, fail fast, and write local logs without echoing full output into model context. This is not a sandbox. High-risk repositories should execute verification in a container or trusted CI and avoid commands containing secrets.
+A malicious or mistaken command can access anything available to the current user. Commands are explicit workflow inputs, run only during verification in a temporary copy, have per-command process-group timeouts, fail fast, and stream bounded local logs without echoing full output into model context. Absolute and repository-escaping symbolic links are rejected before snapshot creation. The temporary copy protects against ordinary relative workspace writes; it is not operating-system isolation and cannot prevent explicit absolute-path writes, network calls, or external side effects. High-risk repositories should execute verification in a container or trusted CI and avoid commands containing secrets.
 
 ### Evidence reuse or mutation
 
@@ -55,7 +55,7 @@ Agents share the user's execution environment, and approval evidence is not cryp
 
 ### Secret leakage
 
-Secrets may enter prompts, documents, meetings, logs, or Git history. The plugin does not store secrets intentionally. Agents must redact sensitive values and avoid persisting them in workflow artifacts.
+Secrets may enter prompts, documents, meetings, logs, or Git history. Verification logs and recorded commands apply best-effort redaction for common credential formats, but this is not complete secret detection. Agents must still redact sensitive values and avoid persisting them in workflow artifacts.
 
 ### Destructive or high-impact actions
 
