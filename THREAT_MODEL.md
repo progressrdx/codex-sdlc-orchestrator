@@ -31,7 +31,11 @@ An attacker may place instructions in a README, code comment, fixture, generated
 
 ### Fabricated or weakened verification
 
-A developer may modify tests, provide a misleading summary, or manufacture evidence. Testing uses an independent role, cites commands and paths, and must verify authoritative results. Developer self-test cannot satisfy independent acceptance.
+A developer may modify tests, provide a misleading summary, or manufacture evidence. The state tool executes recorded build/test commands, binds successful exit metadata and a bounded log hash to the tested source, and rejects commands that alter product files. Testing still uses an independent role because an exit code cannot prove that the chosen tests are sufficient. Developer self-test cannot satisfy independent acceptance.
+
+### Verification command execution
+
+A malicious or mistaken command can access anything available to the current user. Commands are explicit workflow inputs, run only during verification, have per-command timeouts, fail fast, and write local logs without echoing full output into model context. This is not a sandbox. High-risk repositories should execute verification in a container or trusted CI and avoid commands containing secrets.
 
 ### Evidence reuse or mutation
 

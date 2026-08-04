@@ -205,6 +205,7 @@ class WorkflowToolTests(unittest.TestCase):
             "--status",
             status,
             *(["--notes", notes] if notes else []),
+            *(["--test-command", "true"] if name == "verification_report" and status == "ready" else []),
         )
 
     def record_clarification(self) -> None:
@@ -685,6 +686,14 @@ class WorkflowToolTests(unittest.TestCase):
         self.record("verification_report", "requirements/REQ-test-flow/verification.md")
         self.run_tool("advance")
 
+        verified_state = json.loads(self.run_tool("status", "--json").stdout)
+        test_log = self.root / verified_state["verification_snapshot"]["test_execution"]["log_path"]
+        original_log = test_log.read_text(encoding="utf-8")
+        test_log.write_text(original_log + "\ntampered\n", encoding="utf-8")
+        stale_log = self.run_tool("advance", expected=2)
+        self.assertIn("verification_snapshot:test_execution", stale_log.stderr)
+        test_log.write_text(original_log, encoding="utf-8")
+
         source.write_text("print('changed after testing')\n", encoding="utf-8")
         blocked = self.run_tool("advance", expected=2)
         self.assertIn(
@@ -695,29 +704,64 @@ class WorkflowToolTests(unittest.TestCase):
         self.confirm_delivery("request_changes")
         self.record("implementation", "requirements/REQ-test-flow/implementation-v2.md")
         self.run_tool("advance")
-        reused = self.run_tool(
-            "record-artifact",
-            "--name",
-            "verification_report",
-            "--path",
-            "docs/requirements/REQ-test-flow/verification.md",
-            expected=2,
-        )
-        self.assertIn("same verification report was reused", reused.stderr)
-        self.record(
-            "verification_report",
-            "requirements/REQ-test-flow/verification-v2.md",
-            text=(
-                "# Verification report\n\n"
-                "## Test execution\n\nIndependent tests were rerun against the changed source.\n\n"
-                "## Result\n\nThe changed product behavior passed the focused checks.\n"
-            ),
-        )
+        self.record("verification_report", "requirements/REQ-test-flow/verification.md")
         refreshed = json.loads(self.run_tool("status", "--json").stdout)
         self.assertEqual(
             refreshed["artifacts"]["verification_report"]["evidence_sha256"],
             refreshed["verification_snapshot"]["verification_evidence_sha256"],
         )
+        self.assertEqual("pass", refreshed["verification_snapshot"]["test_execution"]["status"])
+        self.assertTrue(
+            (self.root / refreshed["verification_snapshot"]["test_execution"]["log_path"]).is_file()
+        )
+
+    def test_failed_verification_command_stops_without_recording_report(self) -> None:
+        self.init("micro")
+        self.run_tool("advance")
+        self.assess_risk("micro")
+        self.run_tool("advance")
+        self.record("implementation", "requirements/REQ-test-flow/implementation.md")
+        self.run_tool("advance")
+        report = self.write_artifact("requirements/REQ-test-flow/verification-failed.md")
+        failed = self.run_tool(
+            "record-artifact",
+            "--name",
+            "verification_report",
+            "--path",
+            str(report.relative_to(self.root)),
+            "--test-command",
+            "echo TOKEN_HEAVY_FAILURE_DETAIL; exit 7",
+            expected=2,
+        )
+        self.assertIn("test exited with 7", failed.stderr)
+        self.assertNotIn("TOKEN_HEAVY_FAILURE_DETAIL", failed.stderr)
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertNotIn("verification_report", state["artifacts"])
+        self.assertEqual(1, len(list((self.root / ".ai-workflow/REQ-test-flow/test-runs").glob("*.log"))))
+
+    def test_verification_command_cannot_silently_change_product_source(self) -> None:
+        self.init("micro")
+        self.run_tool("advance")
+        self.assess_risk("micro")
+        self.run_tool("advance")
+        source = self.root / "app.py"
+        source.write_text("original\n", encoding="utf-8")
+        self.record("implementation", "requirements/REQ-test-flow/implementation.md")
+        self.run_tool("advance")
+        report = self.write_artifact("requirements/REQ-test-flow/verification-mutating.md")
+        rejected = self.run_tool(
+            "record-artifact",
+            "--name",
+            "verification_report",
+            "--path",
+            str(report.relative_to(self.root)),
+            "--test-command",
+            "echo changed > app.py",
+            expected=2,
+        )
+        self.assertIn("changed product files", rejected.stderr)
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertNotIn("verification_report", state["artifacts"])
 
     def test_quick_triage_can_skip_unneeded_questions_and_preview(self) -> None:
         self.init("quick")
@@ -1609,9 +1653,9 @@ class WorkflowToolTests(unittest.TestCase):
             "--evidence",
             str(source_evidence.relative_to(self.root)),
             "--build-command",
-            "python -m build",
+            "true",
             "--test-command",
-            "python -m unittest",
+            "true",
             "--source-path",
             "app.py",
             expected=2,
@@ -1623,9 +1667,9 @@ class WorkflowToolTests(unittest.TestCase):
             "--evidence",
             str(source_evidence.relative_to(self.root)),
             "--build-command",
-            "python -m build",
+            "true",
             "--test-command",
-            "python -m unittest",
+            "true",
             "--source-path",
             "app.py",
         )
@@ -1696,8 +1740,8 @@ class WorkflowToolTests(unittest.TestCase):
                 {
                     "source": {
                         "evidence": str(source_evidence.relative_to(self.root)),
-                        "build_command": "python -m build",
-                        "test_command": "python -m unittest",
+                        "build_command": "true",
+                        "test_command": "true",
                         "paths": ["app.py"],
                         "ignore_paths": ["generated"],
                     },
@@ -1736,6 +1780,7 @@ class WorkflowToolTests(unittest.TestCase):
         self.assertEqual("cli", after["journey_validation"]["profile"])
         self.assertEqual(["app.py"], after["source_revision"]["scope_paths"])
         self.assertEqual(["generated"], after["source_revision"]["ignored_paths"])
+        self.assertEqual("pass", after["source_revision"]["test_execution"]["status"])
 
     def test_submit_gate_review_registers_decisions_and_meeting_atomically(self) -> None:
         self.init("quick")
@@ -1862,9 +1907,9 @@ class WorkflowToolTests(unittest.TestCase):
             "--evidence",
             str(source_evidence.relative_to(self.root)),
             "--build-command",
-            "python -m build",
+            "true",
             "--test-command",
-            "python -m unittest",
+            "true",
             "--source-path",
             "app.py",
         )
@@ -1998,7 +2043,7 @@ class WorkflowToolTests(unittest.TestCase):
     def test_state_revision_increments_and_schema_is_validated(self) -> None:
         self.init("quick")
         initial = json.loads(self.run_tool("status", "--json").stdout)
-        self.assertEqual(9, initial["schema_version"])
+        self.assertEqual(10, initial["schema_version"])
         self.assertEqual(1, initial["revision"])
 
         self.run_tool("advance")
@@ -2015,6 +2060,19 @@ class WorkflowToolTests(unittest.TestCase):
         rejected = self.run_tool("status", expected=2)
         self.assertIn("Unsupported schema_version", rejected.stderr)
 
+    def test_history_events_refresh_workflow_updated_at(self) -> None:
+        self.init("micro")
+        workflow_module = self.workflow_module()
+        state_path, state = workflow_module.load_state(self.root)
+        state["workflow"]["updated_at"] = "2000-01-01T00:00:00+00:00"
+        workflow_module.save_state(state_path, state)
+        self.run_tool("advance")
+        refreshed = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertNotEqual(
+            "2000-01-01T00:00:00+00:00",
+            refreshed["workflow"]["updated_at"],
+        )
+
     def test_schema_v3_workflow_migrates_without_inserting_new_active_stages(self) -> None:
         self.init("quick")
         state_path = self.root / ".ai-workflow" / "REQ-test-flow" / "state.yaml"
@@ -2027,7 +2085,7 @@ class WorkflowToolTests(unittest.TestCase):
         state_path.write_text(json.dumps(state), encoding="utf-8")
 
         migrated = json.loads(self.run_tool("status", "--json").stdout)
-        self.assertEqual(9, migrated["schema_version"])
+        self.assertEqual(10, migrated["schema_version"])
         self.assertNotIn("scope_check", migrated["workflow"]["flow_stages"])
         self.run_tool("advance")
         self.assertIn("Stage: clarification", self.run_tool("status").stdout)
@@ -2040,22 +2098,46 @@ class WorkflowToolTests(unittest.TestCase):
         state["workflow"]["flow_stages"].remove("delivery_confirmation")
         state_path.write_text(json.dumps(state), encoding="utf-8")
         migrated = json.loads(self.run_tool("status", "--json").stdout)
-        self.assertEqual(9, migrated["schema_version"])
+        self.assertEqual(10, migrated["schema_version"])
         self.assertEqual(
             ["intake", "scope_check", "implementation", "verification", "delivery_confirmation", "completed"],
             migrated["workflow"]["flow_stages"],
         )
 
-    def test_schema_v8_migration_adds_verification_snapshot(self) -> None:
+    def test_schema_v9_migration_preserves_state_and_adds_new_defaults(self) -> None:
         self.init("standard")
         state_path = self.root / ".ai-workflow" / "REQ-test-flow" / "state.yaml"
         state = json.loads(self.run_tool("status", "--json").stdout)
-        state["schema_version"] = 8
+        state["schema_version"] = 9
         state.pop("verification_snapshot", None)
+        state.pop("repository_context", None)
         state_path.write_text(json.dumps(state), encoding="utf-8")
         migrated = json.loads(self.run_tool("status", "--json").stdout)
-        self.assertEqual(9, migrated["schema_version"])
+        self.assertEqual(10, migrated["schema_version"])
         self.assertEqual({}, migrated["verification_snapshot"])
+        self.assertEqual({}, migrated["repository_context"])
+
+    def test_pause_suppresses_mutations_until_resume(self) -> None:
+        self.init("micro")
+        self.run_tool("pause", "--reason", "User is discussing an unrelated question.")
+        paused = json.loads(self.run_tool("overview", "--json").stdout)
+        self.assertEqual("paused", paused["status"])
+        self.assertIn("workflow:paused", paused["missing"])
+        self.assertIn("changed files", paused["execution_policy"]["context"])
+        blocked = self.run_tool("advance", expected=2)
+        self.assertIn("Workflow is paused", blocked.stderr)
+        self.run_tool("resume")
+        resumed = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual("active", resumed["workflow"]["status"])
+
+    def test_overview_warns_when_git_branch_changes(self) -> None:
+        self.initialize_git_source()
+        self.init("micro")
+        subprocess.run(["git", "-C", str(self.root), "checkout", "-qb", "other"], check=True)
+        overview = json.loads(self.run_tool("overview", "--json").stdout)
+        self.assertTrue(
+            any("Git branch changed" in warning for warning in overview["health_warnings"])
+        )
 
     def test_workflow_ids_and_active_pointer_cannot_escape_repository(self) -> None:
         self.init("quick")

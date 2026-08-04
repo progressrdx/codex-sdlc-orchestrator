@@ -44,6 +44,8 @@ To inspect or continue:
 查看当前阻塞问题和待办事项。
 ```
 
+When you temporarily switch topics, say “暂停当前研发流程”. Pausing preserves all evidence while stopping automatic workflow context and rejecting state changes; “继续当前正式研发流程” resumes at the same stage.
+
 Those progress checks use the workflow `overview`, which summarizes the active stage, whether the gate can advance, missing evidence, open issues, meeting records, and human approval checkpoints.
 
 Short continuation phrases work only when `.ai-workflow/active.yaml` exists. Without an active workflow, “继续” or “开始验收” alone never creates one.
@@ -133,6 +135,8 @@ Workflow state uses:
 - A validated previous-state backup plus `audit-state` and explicit backup repair.
 - Live evidence hashes: changing an indexed artifact, review, meeting note, or human-approval file blocks further gate advancement until refreshed.
 - Source-live verification in every mode: micro, quick, and standard snapshot tracked and untracked product content; strict binds committed reviewed scope. Product changes after testing invalidate delivery evidence.
+- Command-backed verification: build/smoke and test commands run inside the state tool with fail-fast timeouts; only compact metadata and hashes enter workflow state, while bounded logs remain local for failure diagnosis.
+- Mode-aware cost policy in `overview`: delta-only context, smoke tests before broad tests, no full passing logs, and only the roles required by the enabled gate.
 - Automatic rollback to the earliest affected stage when an upstream artifact changes.
 - Required user confirmation and preview feedback whenever those gates are enabled by the selected flow.
 - Risk-based `micro`, `quick`, `standard`, and `strict` selection, with conditional clarification and preview gates for quick work.
@@ -161,6 +165,7 @@ The installed plugin keeps workflow behavior split by responsibility:
 | `assurance_commands.py` | Protected goals/criteria, scope changes, source binding, criterion verdicts, and user-journey verification. |
 | `delivery_commands.py` | Preview feedback, final delivery confirmation, and issue resolution/disposition. |
 | `source_policy.py` | Strict scoped-Git bindings plus tracked/untracked workspace bindings for other modes. |
+| `execution_policy.py` | Mode-aware cost guidance, branch context, fail-fast command execution, and bounded local logs. |
 
 The public command names and state schema remain stable across this split. The small wrappers in `workflow.py` preserve existing integrations while the implementation modules can be tested and maintained independently.
 
@@ -171,6 +176,7 @@ The public command names and state schema remain stable across this split. The s
 | Coordinator call volume | Gate reviews and strict verification use atomic bundle commands. | Granular commands remain available for recovery. |
 | Source freshness | Every mode blocks delivery after post-test product edits. Strict Git metadata can be limited to reviewed delivery paths; other modes bind tracked and untracked workspace content without requiring a commit. | Workflow/evidence paths are excluded; strict empty scope binds all other tracked paths. |
 | Stage routing | Bundled prompt and edit hooks restore active workflow context and deny accidental product patches outside development stages. | Hooks require one-time user trust and are guardrails, not a host security sandbox. |
+| Token cost | Deterministic commands run outside the model; role handoffs use deltas, hashes, and evidence paths. Paused workflows inject no prompt context. | Semantic review still consumes tokens and remains mandatory where product judgment is required. |
 | Role independence | Gate roles require distinct task/session references and evidence files. | References provide traceability, not cryptographic identity. |
 | User satisfaction | Every concrete mode ends with explicit user delivery confirmation. | The tool cannot infer approval from silence or authenticate the human. |
 | Final journey | Deliverable-specific profiles accept truthful pass, fail, blocked, and not-applicable results. | Required non-pass results block advancement. |

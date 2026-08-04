@@ -15,6 +15,7 @@ Keep the main thread focused on business decisions, state transitions, and synth
 4. If no workflow exists and the user explicitly requested the formal process, initialize it with `start --request ... --mode auto` unless the user explicitly chose a mode. Add `--title ...` only when the user gives a better short title. Add `--require-human-approval <gate>` for each configured human checkpoint.
 5. Treat an explicitly requested mode as a minimum floor. Natural-language requests without a mode always start in `auto`; determine the lowest safe concrete mode during scope analysis.
 6. When an active workflow exists, let short requests such as “继续”, “查看进度”, “修改需求”, or “开始验收” resume or inspect that workflow. Without an active workflow, those phrases alone do not start one.
+   If the user explicitly pauses the workflow, run `pause --reason ...`; paused state preserves evidence but suppresses hook routing and rejects delivery mutations. Run `resume` only when the user asks to continue.
 7. On every turn that refers to an active workflow, run `overview` before assigning work or writing files. Do not infer the current stage from the conversation, a prior summary, or the user's wording. The bundled prompt hook reinforces this check but does not replace it.
 8. Treat `start` as opening scope and risk analysis, not permission to build. Advance from intake to `scope_check`, read [scope-risk-template.md](assets/scope-risk-template.md), and inspect the request and repository before asking questions or selecting a mode.
 9. Do not initialize a formal workflow from an ordinary coding request.
@@ -51,6 +52,8 @@ In strict mode, use [core-goals-template.md](assets/core-goals-template.md) at r
 
 Use a role-named subagent task and include the role boundary plus the explicit bundled `$sdlc-*` Skill in its prompt. Project custom agents may be used when available, but the workflow must never depend on them. Never omit the Skill and rely on the task name alone.
 
+Apply the `overview` execution policy to control cost. Pass role agents the current decision summary, affected criteria, changed paths, and evidence paths—not the full transcript or complete passing logs. Run deterministic smoke/focused tests before broad semantic review, stop on the first failure, and expand only when the selected mode or observed risk requires it.
+
 Only route stages present in the state's `flow_stages`. In `micro`, assign implementation to engineering and verification to an independent tester, then obtain lightweight user delivery confirmation; do not invent product work, prototype work, role gates, or meetings that the selected flow omits.
 
 ## Enforce gates
@@ -77,10 +80,10 @@ Only route stages present in the state's `flow_stages`. In `micro`, assign imple
 - Record gate meetings only after collecting independent role verdicts. Prefer one `submit-gate-review` manifest containing exactly the required roles, distinct actor references/evidence, and the synthesized meeting record. Validation is atomic: an invalid role or meeting leaves the prior gate state unchanged.
 - When an indexed artifact changes, the state tool automatically rewinds to its earliest affected stage and supersedes downstream evidence. Treat the returned `change_control_required` event as a required cross-role change-control discussion before rebuilding downstream artifacts.
 - Evidence is live: if an indexed artifact, review, meeting note, or human approval file changes after recording, its hash no longer matches and the gate cannot advance until it is recorded and reviewed again.
-- Verification is source-live in every concrete mode. Micro, quick, and standard bind tracked and untracked workspace content when `verification_report` is recorded; any later product change blocks acceptance or delivery until implementation is reopened and independent testing produces a refreshed report. Strict mode uses the stronger committed, scope-aware `submit-verification` binding. Put generated/vendor exclusions only in reviewed strict bundles and never exclude code that can affect delivery behavior.
+- Verification is source-live and command-backed in every concrete mode. For micro, quick, and standard, record `verification_report` with `--test-command` and optionally `--build-command`; the state tool executes them, stores a local bounded log, and records only command metadata/hashes in state. A nonzero or timed-out command stops immediately. Strict verification bundles execute their build and test commands before binding the committed scope. Any later product change blocks delivery until independent tests run again. Do not paste full passing logs into agent prompts; inspect the local log only for failures and never deliberately print secrets.
 - Select the final-journey profile that matches the deliverable (`web`, `desktop`, `api`, `cli`, `library`, or `data`). Record `fail`, `blocked`, or `not_applicable` truthfully; required non-pass results remain stored and block advancement instead of forcing a false all-pass report.
 - The final journey must test actual semantics and actions appropriate to the profile. A build, screenshot, source inspection, or prototype approval is insufficient.
-- Never edit `state.yaml` directly. Schema 9 state includes an integrity checksum and unsupported manual edits fail closed. Use `audit-state`; when a prior valid automatic backup exists, use the explicit `repair-state --from-backup --confirm RESTORE` recovery path.
+- Never edit `state.yaml` directly. Schema 10 state includes an integrity checksum and unsupported manual edits fail closed. Use `audit-state`; when a prior valid automatic backup exists, use the explicit `repair-state --from-backup --confirm RESTORE` recovery path.
 - Record design coordination as `design_sync`, implementation defects as `defect_triage`, requirement changes as `change_control`, and other cross-role discussions as `ad_hoc`.
 - Never infer `approve` from silence or from an artifact's existence.
 - Never let the implementer substitute for independent test approval.
@@ -118,6 +121,7 @@ workflow.py record-artifact --name prototype --path docs/requirements/.../07-pro
 workflow.py record-user-feedback --verdict approve --summary "..." --evidence docs/requirements/.../07-user-feedback.md
 workflow.py record-user-feedback --verdict request_changes --affected-stage design --summary "..." --evidence docs/requirements/.../07-user-feedback.md
 workflow.py submit-verification --manifest docs/requirements/.../08-verification-bundle.yaml
+workflow.py record-artifact --name verification_report --path docs/requirements/.../08-verification.md --build-command "..." --test-command "..."
 workflow.py record-source-revision --source-path src --source-path tests --build-command "..." --test-command "..." --evidence docs/requirements/.../08-source-verification.md
 workflow.py record-criterion-verdict --criterion-id AC-001 --verdict pass --evidence docs/requirements/.../tests/AC-001.md
 workflow.py record-user-journey --profile api --check launch=pass --check core_outcomes=pass --check content_semantics=pass --check interactions=pass --check external_links=blocked --check release_hygiene=pass --check source_truth=pass --evidence docs/requirements/.../08-final-journey.md
@@ -132,6 +136,8 @@ workflow.py record-meeting --type prd_review --title "PRD review" --participants
 workflow.py record-human-approval --gate acceptance --approved-by "release-owner" --evidence docs/requirements/.../approvals/acceptance.md
 workflow.py audit-state
 workflow.py repair-state --from-backup --confirm RESTORE
+workflow.py pause --reason "User paused this requirement"
+workflow.py resume
 workflow.py advance
 ```
 

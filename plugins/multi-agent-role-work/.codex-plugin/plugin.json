@@ -1,7 +1,7 @@
 {
   "name": "multi-agent-role-work",
-  "version": "2.5.0+codex.20260804131507",
-  "description": "Stage-aware formal multi-role delivery with adaptive gates, source-live verification, and explicit user approval.",
+  "version": "2.6.0+codex.20260804135807",
+  "description": "Cost-aware formal multi-role delivery with executable verification, pausable routing, and explicit user approval.",
   "author": {
     "name": "progressrdx",
     "url": "https://github.com/progressrdx"
@@ -37,6 +37,8 @@
       "Atomic gate-review bundles",
       "Active-workflow lifecycle guards",
       "Source-live verification in every mode",
+      "Command-backed fail-fast testing",
+      "Pausable low-context workflow routing",
       "Modular workflow command architecture",
       "Documented assurance boundaries"
     ],

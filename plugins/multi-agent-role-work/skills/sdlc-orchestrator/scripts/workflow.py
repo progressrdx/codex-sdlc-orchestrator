@@ -27,6 +27,7 @@ from risk_commands import invoke as invoke_risk_command
 from review_commands import invoke as invoke_review_command
 from assurance_commands import invoke as invoke_assurance_command
 from delivery_commands import invoke as invoke_delivery_command
+from execution_policy import EXECUTION_POLICIES, execute_verification_commands, repository_context
 from source_policy import SourcePolicyError, source_binding, workspace_binding
 from state_store import (
     WorkflowError,
@@ -40,7 +41,7 @@ from state_store import (
 from workflow_cli import MUTATING_COMMANDS, build_parser as create_cli_parser
 
 
-CURRENT_SCHEMA_VERSION = 9
+CURRENT_SCHEMA_VERSION = 10
 WORKFLOW_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{2,80}")
 ROLES = ("product", "engineering", "testing")
 GATES = ("prd_review", "readiness_review", "acceptance")
@@ -316,6 +317,7 @@ STAGE_GUIDANCE = {
     "completed": "No next workflow action is required.",
 }
 
+
 def now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -402,7 +404,7 @@ def load_state(root: Path, workflow_id: str | None = None) -> tuple[Path, dict[s
 
 def migrate_state(root: Path, state: dict[str, Any]) -> None:
     version = state.get("schema_version")
-    if version in {1, 2, 3, 4, 5, 6, 7, 8}:
+    if version in {1, 2, 3, 4, 5, 6, 7, 8, 9}:
         state["schema_version"] = CURRENT_SCHEMA_VERSION
         state.setdefault("revision", 0)
         state.setdefault("human_approval_policy", {"required_gates": []})
@@ -429,6 +431,7 @@ def migrate_state(root: Path, state: dict[str, Any]) -> None:
     state.setdefault("source_revision", {})
     state.setdefault("verification_snapshot", {})
     state.setdefault("journey_validation", {})
+    state.setdefault("repository_context", {})
     for collection in ("artifacts", "human_approvals"):
         for item in state.get(collection, {}).values():
             if item.get("status") == "not_applicable" or item.get("evidence_sha256"):
@@ -489,7 +492,7 @@ def validate_state(state: dict[str, Any], path: Path) -> None:
         raise WorkflowError(f"Invalid workflow flow_stages in {path}: {configured_stages!r}")
     if stage not in configured_stages:
         raise WorkflowError(f"Invalid workflow stage in {path}: {stage!r}")
-    if workflow.get("status") not in {"active", "completed"}:
+    if workflow.get("status") not in {"active", "paused", "completed"}:
         raise WorkflowError(f"Invalid workflow status in {path}: {workflow.get('status')!r}")
     required_gates = state.get("human_approval_policy", {}).get("required_gates", [])
     if not isinstance(required_gates, list) or any(gate not in GATES for gate in required_gates):
@@ -506,6 +509,7 @@ def validate_state(state: dict[str, Any], path: Path) -> None:
         "source_revision",
         "verification_snapshot",
         "journey_validation",
+        "repository_context",
     ):
         if not isinstance(state.get(name), dict):
             raise WorkflowError(f"Invalid {name} mapping in {path}")
@@ -560,6 +564,18 @@ def artifact_ready(root: Path, state: dict[str, Any], name: str) -> bool:
         return True
     return item.get("status") == "ready" and evidence_matches(
         root, str(item.get("path", "")), item.get("evidence_sha256")
+    )
+
+
+def test_execution_ready(root: Path, execution: dict[str, Any]) -> bool:
+    return bool(
+        execution.get("status") == "pass"
+        and execution.get("commands")
+        and evidence_matches(
+            root,
+            str(execution.get("log_path", "")),
+            execution.get("log_sha256"),
+        )
     )
 
 
@@ -802,6 +818,8 @@ def stage_requirements(root: Path, state: dict[str, Any]) -> tuple[list[str], li
             source = state.get("source_revision", {})
             if not source or source.get("source_tree_sha256") != fingerprint["source_tree_sha256"]:
                 missing.append("source_revision:stale_or_missing")
+            if not test_execution_ready(root, source.get("test_execution", {})):
+                missing.append("source_revision:test_execution")
             if fingerprint["dirty_paths"]:
                 missing.append("source_revision:uncommitted_source")
             criteria = state.get("acceptance_criteria", {})
@@ -866,6 +884,8 @@ def stage_requirements(root: Path, state: dict[str, Any]) -> tuple[list[str], li
             current_workspace = {"source_tree_sha256": ""}
         if not snapshot:
             missing.append("verification_snapshot:missing")
+        elif not test_execution_ready(root, snapshot.get("test_execution", {})):
+            missing.append("verification_snapshot:test_execution")
         elif snapshot.get("source_tree_sha256") != current_workspace["source_tree_sha256"]:
             missing.append("verification_snapshot:source_changed_after_verification")
             notes.append(
@@ -1000,7 +1020,25 @@ def next_stage_name(state: dict[str, Any]) -> str | None:
 def overview_payload(root: Path, state: dict[str, Any]) -> dict[str, Any]:
     workflow = state["workflow"]
     stage = workflow["current_stage"]
-    missing, notes = stage_requirements(root, state)
+    if workflow["status"] == "paused":
+        missing, notes = ["workflow:paused"], ["Resume the workflow before making changes."]
+    else:
+        missing, notes = stage_requirements(root, state)
+    health_warnings: list[str] = []
+    recorded_context = state.get("repository_context", {})
+    current_context = repository_context(root)
+    if (
+        recorded_context.get("git_branch")
+        and current_context.get("git_branch")
+        and recorded_context["git_branch"] != current_context["git_branch"]
+    ):
+        health_warnings.append(
+            f"Git branch changed from {recorded_context['git_branch']} to "
+            f"{current_context['git_branch']}; confirm this workflow belongs on the current branch."
+        )
+    pointer = active_pointer(root)
+    if workflow["status"] in {"active", "paused"} and not pointer.exists():
+        health_warnings.append("Active workflow pointer is missing; use --id until it is restored.")
     next_stage = None if missing else next_stage_name(state)
     return {
         "workflow_id": workflow["id"],
@@ -1041,6 +1079,8 @@ def overview_payload(root: Path, state: dict[str, Any]) -> dict[str, Any]:
         "risk_recommendation": state.get("risk_assessment", {}).get("recommended_mode"),
         "enabled_stages": list(workflow_stages(state)),
         "escalation": state.get("escalation", {"status": "none"}),
+        "execution_policy": EXECUTION_POLICIES[workflow["mode"]],
+        "health_warnings": health_warnings,
     }
 
 
@@ -1069,10 +1109,16 @@ def print_overview(payload: dict[str, Any]) -> None:
             )
     else:
         print("Open or carried issues: none")
+    if payload["health_warnings"]:
+        print("Health warnings:")
+        for warning in payload["health_warnings"]:
+            print(f"- {warning}")
     print(f"Meeting notes: {payload['meeting_notes']}")
     if payload["risk_recommendation"]:
         print(f"Risk-recommended mode: {payload['risk_recommendation']}")
     print("Enabled stages: " + " -> ".join(payload["enabled_stages"]))
+    policy = payload["execution_policy"]
+    print(f"Cost policy: {policy['context']}; {policy['testing']}")
     if payload["escalation"].get("status") == "required":
         escalation = payload["escalation"]
         print(
@@ -1248,6 +1294,7 @@ def cmd_init(args: argparse.Namespace) -> None:
         "source_revision": {},
         "verification_snapshot": {},
         "journey_validation": {},
+        "repository_context": repository_context(root),
         "history": [
             {"at": timestamp, "event": "initialized", "detail": f"Started {args.mode} workflow"}
         ],
@@ -1419,6 +1466,34 @@ def cmd_overview(args: argparse.Namespace) -> None:
     print_overview(payload)
 
 
+def cmd_pause(args: argparse.Namespace) -> None:
+    root = repository_root(args.root)
+    path, state = load_state(root, args.id)
+    workflow = state["workflow"]
+    if workflow["status"] != "active":
+        raise WorkflowError(f"Workflow status is {workflow['status']}, not active.")
+    workflow["status"] = "paused"
+    workflow["paused_at"] = now()
+    workflow["pause_reason"] = args.reason.strip()
+    add_history(state, "paused", args.reason.strip())
+    save_state(path, state)
+    print(f"Paused workflow {workflow['id']} at {workflow['current_stage']}")
+
+
+def cmd_resume(args: argparse.Namespace) -> None:
+    root = repository_root(args.root)
+    path, state = load_state(root, args.id)
+    workflow = state["workflow"]
+    if workflow["status"] != "paused":
+        raise WorkflowError(f"Workflow status is {workflow['status']}, not paused.")
+    workflow["status"] = "active"
+    workflow.pop("paused_at", None)
+    workflow.pop("pause_reason", None)
+    add_history(state, "resumed", f"Resumed at {workflow['current_stage']}")
+    save_state(path, state)
+    print(f"Resumed workflow {workflow['id']} at {workflow['current_stage']}")
+
+
 def cmd_next(args: argparse.Namespace) -> None:
     root = repository_root(args.root)
     _, state = load_state(root, args.id)
@@ -1491,11 +1566,19 @@ def cmd_record_artifact(args: argparse.Namespace) -> None:
     previous = state.get("artifacts", {}).get(args.name, {})
     next_hash = content_sha256(absolute) if args.status == "ready" else None
     verification_binding: dict[str, Any] | None = None
+    verification_execution: dict[str, Any] | None = None
     if (
         args.name == "verification_report"
         and args.status == "ready"
         and state["workflow"]["mode"] != "strict"
     ):
+        if state["workflow"]["current_stage"] != "verification":
+            raise WorkflowError("A verification report can only be recorded during verification.")
+        if not (args.test_command or "").strip():
+            raise WorkflowError(
+                "A non-strict verification report requires --test-command so passing evidence "
+                "is backed by an actual deterministic run."
+            )
         prior_snapshot = state.get("verification_snapshot", {})
         ignored_paths = tuple(prior_snapshot.get("ignored_paths", []))
         if not ignored_paths:
@@ -1503,21 +1586,30 @@ def cmd_record_artifact(args: argparse.Namespace) -> None:
             if original_request:
                 ignored_paths = (Path(str(original_request)).parent.as_posix(),)
         try:
+            before_execution = workspace_binding(root, ignored_paths)
+        except SourcePolicyError as exc:
+            raise WorkflowError(str(exc)) from exc
+        verification_execution = execute_verification_commands(
+            root,
+            state,
+            tuple(
+                (label, command)
+                for label, command in (
+                    ("build_or_smoke", args.build_command or ""),
+                    ("test", args.test_command or ""),
+                )
+                if command.strip()
+            ),
+            args.command_timeout,
+        )
+        try:
             verification_binding = workspace_binding(root, ignored_paths)
         except SourcePolicyError as exc:
             raise WorkflowError(str(exc)) from exc
-        source_changed = bool(prior_snapshot) and (
-            prior_snapshot.get("source_tree_sha256")
-            != verification_binding["source_tree_sha256"]
-        )
-        stale_report_reused = bool(previous) and (
-            previous.get("evidence_sha256") == next_hash
-            and (source_changed or previous.get("status") == "superseded")
-        )
-        if stale_report_reused:
+        if before_execution["source_tree_sha256"] != verification_binding["source_tree_sha256"]:
             raise WorkflowError(
-                "The product source changed or verification was superseded, but the same "
-                "verification report was reused. Rerun independent testing and update the report."
+                "Verification commands changed product files. Exclude genuine generated output "
+                "through repository ignore rules, or restore source and rerun."
             )
     changed = bool(previous) and (
         previous.get("path") != str(relative)
@@ -1548,6 +1640,7 @@ def cmd_record_artifact(args: argparse.Namespace) -> None:
         state["verification_snapshot"] = {
             **verification_binding,
             "verification_evidence_sha256": next_hash,
+            "test_execution": verification_execution,
             "recorded_at": now(),
         }
     invalidated: list[str] = []
@@ -1697,7 +1790,14 @@ def main() -> int:
     args = parser.parse_args()
     try:
         if args.command in MUTATING_COMMANDS:
-            with workflow_lock(repository_root(args.root)):
+            root = repository_root(args.root)
+            with workflow_lock(root):
+                if args.command not in {"init", "start", "repair-state", "resume"}:
+                    _, current = load_state(root, args.id)
+                    if current["workflow"]["status"] == "paused":
+                        raise WorkflowError(
+                            "Workflow is paused. Resume it before recording or changing delivery state."
+                        )
                 args.func(args)
         else:
             args.func(args)

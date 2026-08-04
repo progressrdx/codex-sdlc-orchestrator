@@ -247,12 +247,6 @@ def cmd_submit_verification(args: argparse.Namespace) -> None:
     ignored_paths = tuple(
         str(item) for item in source_spec.get("ignore_paths", []) if str(item).strip()
     )
-    current = current_source_fingerprint(root, scope_paths, ignored_paths)
-    if current["dirty_paths"]:
-        raise WorkflowError(
-            "Commit the scoped source under verification first: "
-            + ",".join(current["dirty_paths"])
-        )
     source_evidence, source_relative, source_hash = indexed_document(
         root, str(source_spec.get("evidence", ""))
     )
@@ -261,6 +255,12 @@ def cmd_submit_verification(args: argparse.Namespace) -> None:
     test_command = str(source_spec.get("test_command", "")).strip()
     if not build_command or not test_command:
         raise WorkflowError("Verification manifest source requires build_command and test_command.")
+    current = current_source_fingerprint(root, scope_paths, ignored_paths)
+    if current["dirty_paths"]:
+        raise WorkflowError(
+            "Commit the scoped source under verification first: "
+            + ",".join(current["dirty_paths"])
+        )
 
     expected_criteria = set(state.get("acceptance_criteria", {}))
     pending_verdicts: dict[str, dict[str, Any]] = {}
@@ -334,6 +334,22 @@ def cmd_submit_verification(args: argparse.Namespace) -> None:
     if absent:
         raise WorkflowError("Journey report is missing check sections: " + ",".join(absent))
 
+    execution = execute_verification_commands(
+        root,
+        state,
+        (("build", build_command), ("test", test_command)),
+        int(source_spec.get("command_timeout", 300)),
+    )
+    after_execution = current_source_fingerprint(root, scope_paths, ignored_paths)
+    if after_execution["dirty_paths"] or any(
+        after_execution.get(key) != current.get(key)
+        for key in ("git_head", "source_tree_sha256")
+    ):
+        raise WorkflowError(
+            "Verification commands changed the scoped source; restore or commit intentionally, "
+            "then rerun verification."
+        )
+    current = after_execution
     timestamp = now()
     state["source_revision"] = {
         **current,
@@ -341,6 +357,7 @@ def cmd_submit_verification(args: argparse.Namespace) -> None:
         "evidence_sha256": source_hash,
         "build_command": build_command,
         "test_command": test_command,
+        "test_execution": execution,
         "recorded_at": timestamp,
     }
     state["criterion_verdicts"] = pending_verdicts
@@ -397,12 +414,29 @@ def cmd_record_source_revision(args: argparse.Namespace) -> None:
         raise WorkflowError(
             "Commit the exact source under verification first: " + ",".join(current["dirty_paths"])
         )
+    execution = execute_verification_commands(
+        root,
+        state,
+        (("build", args.build_command), ("test", args.test_command)),
+    )
+    after_execution = current_source_fingerprint(
+        root,
+        tuple(args.source_path or ()),
+        tuple(args.ignore_source_path or ()),
+    )
+    if after_execution["dirty_paths"] or any(
+        after_execution.get(key) != current.get(key)
+        for key in ("git_head", "source_tree_sha256")
+    ):
+        raise WorkflowError("Verification commands changed the scoped source.")
+    current = after_execution
     state["source_revision"] = {
         **current,
         "evidence": str(relative),
         "evidence_sha256": evidence_hash,
         "build_command": args.build_command.strip(),
         "test_command": args.test_command.strip(),
+        "test_execution": execution,
         "recorded_at": now(),
     }
     state["criterion_verdicts"] = {}

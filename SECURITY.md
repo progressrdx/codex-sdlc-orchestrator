@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Security fixes are applied to the latest `1.x` release. Users should upgrade the marketplace snapshot and reinstall the current plugin before reporting a problem that may already be fixed.
+Security fixes are applied to the latest `2.x` release. Users should upgrade the marketplace snapshot and reinstall the current plugin before reporting a problem that may already be fixed.
 
 ## Reporting a vulnerability
 
@@ -24,7 +24,8 @@ This plugin is a workflow-integrity tool, not an identity, authorization, or san
 
 ## Safe operation
 
-- Review shell commands before execution and use the least privilege needed.
+- Review verification shell commands before registration: the state tool executes recorded build/test commands in the repository with the current user's privileges. Use the least privilege needed and never embed credentials in a command.
+- Deterministic test logs are local, size-bounded workflow evidence. Treat them as sensitive, keep `.ai-workflow/` out of Git, and sanitize tools that print credentials or personal data.
 - Never copy secrets into PRDs, reviews, meeting notes, workflow state, prompts, or test fixtures.
 - Keep evidence inside the repository; the state tool rejects evidence paths outside it.
 - Require explicit human authorization for destructive data operations, permission changes, production releases, security exceptions, and other irreversible actions.

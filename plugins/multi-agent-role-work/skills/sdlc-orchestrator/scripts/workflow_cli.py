@@ -10,6 +10,8 @@ MUTATING_COMMANDS = frozenset(
     {
         "init",
         "start",
+        "pause",
+        "resume",
         "repair-state",
         "assess-risk",
         "report-risk",
@@ -114,6 +116,15 @@ def build_parser(api: Any) -> argparse.ArgumentParser:
     overview = subparsers.add_parser("overview", help="Show a concise progress report")
     overview.add_argument("--json", action="store_true")
     overview.set_defaults(func=cmd_overview)
+
+    pause = subparsers.add_parser(
+        "pause", help="Pause workflow routing without discarding state or evidence"
+    )
+    pause.add_argument("--reason", required=True)
+    pause.set_defaults(func=cmd_pause)
+
+    resume = subparsers.add_parser("resume", help="Resume a paused workflow at the same stage")
+    resume.set_defaults(func=cmd_resume)
 
     next_cmd = subparsers.add_parser("next", help="Show the next required evidence or transition")
     next_cmd.set_defaults(func=cmd_next)
@@ -222,6 +233,20 @@ def build_parser(api: Any) -> argparse.ArgumentParser:
     artifact.add_argument("--path", required=True)
     artifact.add_argument("--status", choices=("ready", "not_applicable", "superseded"), default="ready")
     artifact.add_argument("--notes")
+    artifact.add_argument(
+        "--build-command",
+        help="Optional deterministic build/smoke command executed before a non-strict verification report is accepted",
+    )
+    artifact.add_argument(
+        "--test-command",
+        help="Deterministic test command required for a non-strict verification report",
+    )
+    artifact.add_argument(
+        "--command-timeout",
+        type=int,
+        default=300,
+        help="Per-command timeout in seconds for verification execution",
+    )
     artifact.set_defaults(func=cmd_record_artifact)
 
     goals = subparsers.add_parser(

@@ -56,6 +56,7 @@ class PluginPackageTests(unittest.TestCase):
             "assurance_commands.py",
             "delivery_commands.py",
             "source_policy.py",
+            "execution_policy.py",
         }
         self.assertTrue(required_modules.issubset({path.name for path in scripts.glob("*.py")}))
         workflow_lines = (scripts / "workflow.py").read_text(encoding="utf-8").splitlines()

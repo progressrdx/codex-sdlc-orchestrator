@@ -104,6 +104,13 @@ class WorkflowHookTests(unittest.TestCase):
         (self.root / ".ai-workflow" / "active.yaml").unlink()
         self.assertEqual({}, self.run_hook("prompt", {"prompt": "ordinary request"}))
 
+    def test_paused_workflow_does_not_inject_prompt_context(self) -> None:
+        state = self.root / ".ai-workflow" / "REQ-hook" / "state.yaml"
+        data = json.loads(state.read_text(encoding="utf-8"))
+        data["workflow"]["status"] = "paused"
+        state.write_text(json.dumps(data), encoding="utf-8")
+        self.assertEqual({}, self.run_hook("prompt", {"prompt": "unrelated question"}))
+
 
 if __name__ == "__main__":
     unittest.main()
