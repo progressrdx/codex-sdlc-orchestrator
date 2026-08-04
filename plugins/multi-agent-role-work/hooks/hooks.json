@@ -1,0 +1,31 @@
+{
+  "description": "Keep active formal workflows stage-aware and prevent accidental source edits outside development stages.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/hooks/workflow_guard.py\" prompt",
+            "timeout": 5,
+            "statusMessage": "Checking active SDLC workflow",
+            "additionalContextLimit": 900
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^(apply_patch|Edit|Write)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/hooks/workflow_guard.py\" guard",
+            "timeout": 5,
+            "statusMessage": "Enforcing SDLC stage boundary"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,4 +1,4 @@
-"""Cheap, scope-aware Git source bindings for workflow verification."""
+"""Source bindings for formal workflow verification."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from typing import Any
 
 DEFAULT_IGNORED_PREFIXES = (".ai-workflow/", "docs/requirements/", ".idea/")
 DEFAULT_IGNORED_NAMES = {".DS_Store"}
+FALLBACK_IGNORED_PARTS = {".git", "__pycache__", ".pytest_cache", ".mypy_cache"}
 
 
 class SourcePolicyError(RuntimeError):
@@ -120,4 +121,72 @@ def source_binding(
         "scope_paths": list(normalized_scope),
         "ignored_paths": list(normalized_ignored),
         "dirty_paths": _dirty_paths(root, normalized_scope, normalized_ignored),
+    }
+
+
+def _validate_relative_paths(paths: tuple[str, ...]) -> tuple[str, ...]:
+    normalized = tuple(dict.fromkeys(path.strip().rstrip("/") for path in paths if path.strip()))
+    for raw_path in normalized:
+        candidate = Path(raw_path)
+        if (
+            candidate.is_absolute()
+            or ".." in candidate.parts
+            or raw_path.startswith(":")
+            or raw_path.startswith("-")
+        ):
+            raise SourcePolicyError(f"Invalid ignored workspace path: {raw_path}")
+    return normalized
+
+
+def _workspace_paths(root: Path, ignored_paths: tuple[str, ...]) -> list[str]:
+    """List tracked and untracked workspace files, with a non-Git fallback."""
+    try:
+        raw = _git(root, "ls-files", "--cached", "--others", "--exclude-standard", "-z", binary=True)
+        candidates = [
+            entry.decode("utf-8", errors="surrogateescape")
+            for entry in bytes(raw).split(b"\0")
+            if entry
+        ]
+    except SourcePolicyError:
+        candidates = [
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*")
+            if (path.is_file() or path.is_symlink())
+            and not any(part in FALLBACK_IGNORED_PARTS for part in path.relative_to(root).parts)
+        ]
+    return sorted({path for path in candidates if _relevant(path, ignored_paths)})
+
+
+def workspace_binding(
+    root: Path,
+    ignored_paths: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Bind the current deliverable content without requiring a Git commit.
+
+    This lightweight binding is used by micro, quick, and standard workflows.
+    It intentionally includes untracked product files so a newly created project
+    cannot pass final delivery with evidence for an older workspace.
+    """
+    normalized_ignored = _validate_relative_paths(ignored_paths)
+    paths = _workspace_paths(root, normalized_ignored)
+    digest = hashlib.sha256()
+    for relative in paths:
+        path = root / relative
+        digest.update(relative.encode("utf-8", errors="surrogateescape"))
+        digest.update(b"\0")
+        if path.is_symlink():
+            payload = ("symlink:" + path.readlink().as_posix()).encode("utf-8")
+            file_hash = hashlib.sha256(payload).hexdigest()
+        else:
+            try:
+                file_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+            except OSError as exc:
+                raise SourcePolicyError(f"Unable to read workspace source: {relative}") from exc
+        digest.update(file_hash.encode("ascii"))
+        digest.update(b"\0")
+    return {
+        "binding_type": "workspace_content",
+        "source_tree_sha256": digest.hexdigest(),
+        "file_count": len(paths),
+        "ignored_paths": list(normalized_ignored),
     }

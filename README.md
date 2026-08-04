@@ -12,6 +12,8 @@ codex plugin marketplace add progressrdx/multi-agent-role-work && codex plugin a
 
 Start a new Codex task after installation. The plugin is then available in every project; no files need to be copied into those projects and no `AGENTS.md` or `.codex/config.toml` needs to be edited.
 
+On first install or update, review and trust the plugin's lifecycle hooks when Codex prompts, then restart Codex. This is a one-time safety review: the hooks keep later messages attached to the active workflow and prevent accidental product edits outside prototype/implementation stages.
+
 ## Start in any project
 
 Open the project in Codex and say:
@@ -90,6 +92,8 @@ intake → scope_check → clarification → requirement_confirmation
 
 Every concrete mode ends with an explicit user delivery confirmation. Product, engineering, and testing approval cannot complete the workflow on the user's behalf.
 
+Follow-up messages are stage-aware. When `.ai-workflow/active.yaml` exists, a lightweight prompt hook reminds the coordinator to read the actual workflow state before acting. At preview or delivery confirmation, criticism such as “这个结果不对” is treated as requested changes—not as approval or permission to silently edit the sample. A write guard blocks `apply_patch` changes to product files until the workflow has rewound to `prototype` or `implementation`; requirement evidence remains writable.
+
 Natural-language starts use temporary `auto` mode. During `scope_check`, the coordinator must explicitly check actors/permissions, goals/scope, business rules/states, data/API effects, failures/edges, compatibility/rollout, subjective choices, and acceptance/verification. It records scope, exclusions, unresolved gaps, and risk flags, then recommends `micro`, `quick`, `standard`, or `strict`. API/data changes, cross-module behavior, security/privacy, migrations, production actions, and irreversible work raise the minimum mode. An explicitly requested mode is never silently downgraded.
 
 The selected mode can grow with the work: `micro → quick → standard → strict`. When product, engineering, or testing reports a newly discovered risk, the state tool automatically recalculates the minimum safe mode. If the current mode is too weak, advancement stops and `overview` explains the risk and recommended upgrade. The mode changes only after explicit user approval; approval rewinds to `scope_check`, preserves the escalation record, and invalidates affected downstream evidence. A strict escalation automatically enables human approval at readiness and acceptance.
@@ -128,6 +132,7 @@ Workflow state uses:
 - A repository-scoped cross-process writer lock.
 - A validated previous-state backup plus `audit-state` and explicit backup repair.
 - Live evidence hashes: changing an indexed artifact, review, meeting note, or human-approval file blocks further gate advancement until refreshed.
+- Source-live verification in every mode: micro, quick, and standard snapshot tracked and untracked product content; strict binds committed reviewed scope. Product changes after testing invalidate delivery evidence.
 - Automatic rollback to the earliest affected stage when an upstream artifact changes.
 - Required user confirmation and preview feedback whenever those gates are enabled by the selected flow.
 - Risk-based `micro`, `quick`, `standard`, and `strict` selection, with conditional clarification and preview gates for quick work.
@@ -155,7 +160,7 @@ The installed plugin keeps workflow behavior split by responsibility:
 | `review_commands.py` | Role verdicts, atomic gate-review bundles, meeting records, and human-approval binding. |
 | `assurance_commands.py` | Protected goals/criteria, scope changes, source binding, criterion verdicts, and user-journey verification. |
 | `delivery_commands.py` | Preview feedback, final delivery confirmation, and issue resolution/disposition. |
-| `source_policy.py` | Scope-aware Git source bindings and dirty-path detection. |
+| `source_policy.py` | Strict scoped-Git bindings plus tracked/untracked workspace bindings for other modes. |
 
 The public command names and state schema remain stable across this split. The small wrappers in `workflow.py` preserve existing integrations while the implementation modules can be tested and maintained independently.
 
@@ -164,7 +169,8 @@ The public command names and state schema remain stable across this split. The s
 | Concern | Current behavior | Boundary |
 |---|---|---|
 | Coordinator call volume | Gate reviews and strict verification use atomic bundle commands. | Granular commands remain available for recovery. |
-| Source freshness | Git object metadata is evaluated once per gate, can be limited to reviewed delivery paths, and records configurable generated/vendor exclusions. | An empty scope binds every tracked path except explicit/default workflow exclusions. |
+| Source freshness | Every mode blocks delivery after post-test product edits. Strict Git metadata can be limited to reviewed delivery paths; other modes bind tracked and untracked workspace content without requiring a commit. | Workflow/evidence paths are excluded; strict empty scope binds all other tracked paths. |
+| Stage routing | Bundled prompt and edit hooks restore active workflow context and deny accidental product patches outside development stages. | Hooks require one-time user trust and are guardrails, not a host security sandbox. |
 | Role independence | Gate roles require distinct task/session references and evidence files. | References provide traceability, not cryptographic identity. |
 | User satisfaction | Every concrete mode ends with explicit user delivery confirmation. | The tool cannot infer approval from silence or authenticate the human. |
 | Final journey | Deliverable-specific profiles accept truthful pass, fail, blocked, and not-applicable results. | Required non-pass results block advancement. |

@@ -80,6 +80,14 @@ class PluginPackageTests(unittest.TestCase):
         self.assertIn("merely discusses team development", skill)
         self.assertIn("$sdlc-orchestrator", agent)
 
+    def test_active_workflow_hooks_are_packaged(self) -> None:
+        hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+        self.assertIn("UserPromptSubmit", hooks["hooks"])
+        self.assertIn("PreToolUse", hooks["hooks"])
+        guard = PLUGIN / "hooks" / "workflow_guard.py"
+        self.assertTrue(guard.is_file())
+        self.assertIn("delivery_confirmation", guard.read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

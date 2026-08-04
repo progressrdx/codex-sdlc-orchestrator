@@ -27,7 +27,7 @@ from risk_commands import invoke as invoke_risk_command
 from review_commands import invoke as invoke_review_command
 from assurance_commands import invoke as invoke_assurance_command
 from delivery_commands import invoke as invoke_delivery_command
-from source_policy import SourcePolicyError, source_binding
+from source_policy import SourcePolicyError, source_binding, workspace_binding
 from state_store import (
     WorkflowError,
     atomic_write_text,
@@ -40,7 +40,7 @@ from state_store import (
 from workflow_cli import MUTATING_COMMANDS, build_parser as create_cli_parser
 
 
-CURRENT_SCHEMA_VERSION = 8
+CURRENT_SCHEMA_VERSION = 9
 WORKFLOW_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{2,80}")
 ROLES = ("product", "engineering", "testing")
 GATES = ("prd_review", "readiness_review", "acceptance")
@@ -402,7 +402,7 @@ def load_state(root: Path, workflow_id: str | None = None) -> tuple[Path, dict[s
 
 def migrate_state(root: Path, state: dict[str, Any]) -> None:
     version = state.get("schema_version")
-    if version in {1, 2, 3, 4, 5, 6, 7}:
+    if version in {1, 2, 3, 4, 5, 6, 7, 8}:
         state["schema_version"] = CURRENT_SCHEMA_VERSION
         state.setdefault("revision", 0)
         state.setdefault("human_approval_policy", {"required_gates": []})
@@ -427,6 +427,7 @@ def migrate_state(root: Path, state: dict[str, Any]) -> None:
     state.setdefault("criterion_verdicts", {})
     state.setdefault("core_outcomes", {})
     state.setdefault("source_revision", {})
+    state.setdefault("verification_snapshot", {})
     state.setdefault("journey_validation", {})
     for collection in ("artifacts", "human_approvals"):
         for item in state.get(collection, {}).values():
@@ -503,6 +504,7 @@ def validate_state(state: dict[str, Any], path: Path) -> None:
         "criterion_verdicts",
         "core_outcomes",
         "source_revision",
+        "verification_snapshot",
         "journey_validation",
     ):
         if not isinstance(state.get(name), dict):
@@ -785,7 +787,7 @@ def stage_requirements(root: Path, state: dict[str, Any]) -> tuple[list[str], li
                 for item in criteria.values()
             ):
                 missing.append("acceptance_criteria:prd_baseline")
-        if stage in {"verification", "acceptance"}:
+        if stage in {"verification", "acceptance", "delivery_confirmation"}:
             scope_paths = tuple(state.get("source_revision", {}).get("scope_paths", []))
             ignored_paths = tuple(state.get("source_revision", {}).get("ignored_paths", []))
             try:
@@ -847,6 +849,29 @@ def stage_requirements(root: Path, state: dict[str, Any]) -> tuple[list[str], li
                     )
                 ):
                     missing.append(f"core_outcome:{goal_id}")
+
+    if state["workflow"]["mode"] != "strict" and stage in {
+        "acceptance",
+        "delivery_confirmation",
+    }:
+        snapshot = state.get("verification_snapshot", {})
+        try:
+            current_workspace = workspace_binding(
+                root,
+                tuple(snapshot.get("ignored_paths", [])),
+            )
+        except SourcePolicyError as exc:
+            missing.append("verification_snapshot:workspace_unavailable")
+            notes.append(str(exc))
+            current_workspace = {"source_tree_sha256": ""}
+        if not snapshot:
+            missing.append("verification_snapshot:missing")
+        elif snapshot.get("source_tree_sha256") != current_workspace["source_tree_sha256"]:
+            missing.append("verification_snapshot:source_changed_after_verification")
+            notes.append(
+                "Product files changed after the recorded verification report; "
+                "return to implementation and rerun independent verification."
+            )
 
     if stage in GATES:
         decisions = state.get("decisions", {}).get(stage, {})
@@ -1221,6 +1246,7 @@ def cmd_init(args: argparse.Namespace) -> None:
         "criterion_verdicts": {},
         "core_outcomes": {},
         "source_revision": {},
+        "verification_snapshot": {},
         "journey_validation": {},
         "history": [
             {"at": timestamp, "event": "initialized", "detail": f"Started {args.mode} workflow"}
@@ -1464,6 +1490,35 @@ def cmd_record_artifact(args: argparse.Namespace) -> None:
             raise WorkflowError(f"Artifact path is already used by {other_name}: {relative}")
     previous = state.get("artifacts", {}).get(args.name, {})
     next_hash = content_sha256(absolute) if args.status == "ready" else None
+    verification_binding: dict[str, Any] | None = None
+    if (
+        args.name == "verification_report"
+        and args.status == "ready"
+        and state["workflow"]["mode"] != "strict"
+    ):
+        prior_snapshot = state.get("verification_snapshot", {})
+        ignored_paths = tuple(prior_snapshot.get("ignored_paths", []))
+        if not ignored_paths:
+            original_request = state.get("artifacts", {}).get("original_request", {}).get("path", "")
+            if original_request:
+                ignored_paths = (Path(str(original_request)).parent.as_posix(),)
+        try:
+            verification_binding = workspace_binding(root, ignored_paths)
+        except SourcePolicyError as exc:
+            raise WorkflowError(str(exc)) from exc
+        source_changed = bool(prior_snapshot) and (
+            prior_snapshot.get("source_tree_sha256")
+            != verification_binding["source_tree_sha256"]
+        )
+        stale_report_reused = bool(previous) and (
+            previous.get("evidence_sha256") == next_hash
+            and (source_changed or previous.get("status") == "superseded")
+        )
+        if stale_report_reused:
+            raise WorkflowError(
+                "The product source changed or verification was superseded, but the same "
+                "verification report was reused. Rerun independent testing and update the report."
+            )
     changed = bool(previous) and (
         previous.get("path") != str(relative)
         or previous.get("status") != args.status
@@ -1489,6 +1544,12 @@ def cmd_record_artifact(args: argparse.Namespace) -> None:
         "updated_at": now(),
         "notes": args.notes or "",
     }
+    if verification_binding is not None:
+        state["verification_snapshot"] = {
+            **verification_binding,
+            "verification_evidence_sha256": next_hash,
+            "recorded_at": now(),
+        }
     invalidated: list[str] = []
     invalidated_meetings: list[str] = []
     automatic_rewind = ""
