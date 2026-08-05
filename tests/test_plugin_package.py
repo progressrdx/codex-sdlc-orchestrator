@@ -78,22 +78,12 @@ class PluginPackageTests(unittest.TestCase):
 
         for content in (skill, contract, agent):
             self.assertIn("团队开发", content)
-        self.assertIn("merely discusses team development", skill)
+        self.assertIn("ordinary questions", skill)
+        self.assertIn("继续团队开发", skill)
         self.assertIn("$sdlc-orchestrator", agent)
 
-    def test_active_workflow_hooks_are_packaged(self) -> None:
-        hooks = json.loads((PLUGIN / "hooks" / "hooks.json").read_text(encoding="utf-8"))
-        self.assertNotIn("UserPromptSubmit", hooks["hooks"])
-        self.assertIn("PreToolUse", hooks["hooks"])
-        self.assertEqual({"PreToolUse"}, set(hooks["hooks"]))
-        self.assertEqual(
-            "^(apply_patch|Edit|Write)$",
-            hooks["hooks"]["PreToolUse"][0]["matcher"],
-        )
-        guard = PLUGIN / "hooks" / "workflow_guard.py"
-        self.assertTrue(guard.is_file())
-        self.assertIn("permissionDecision", guard.read_text(encoding="utf-8"))
-
+    def test_plugin_does_not_package_lifecycle_hooks(self) -> None:
+        self.assertFalse((PLUGIN / "hooks").exists())
 
 if __name__ == "__main__":
     unittest.main()

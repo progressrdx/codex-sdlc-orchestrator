@@ -12,8 +12,6 @@ codex plugin marketplace add progressrdx/multi-agent-role-work && codex plugin a
 
 Start a new Codex task after installation. The plugin is then available in every project; no files need to be copied into those projects and no `AGENTS.md` or `.codex/config.toml` needs to be edited.
 
-On first install or update, review and trust the plugin's lifecycle hooks when Codex prompts, then restart Codex. This is a one-time safety review: the hooks keep later messages attached to the active workflow and prevent accidental product edits outside prototype/implementation stages.
-
 ## Start in any project
 
 Open the project in Codex and say:
@@ -47,6 +45,8 @@ To inspect or continue:
 When you temporarily switch topics, say “暂停当前研发流程”. Pausing preserves all evidence while stopping automatic workflow context and rejecting state changes; “继续当前正式研发流程” resumes at the same stage.
 
 Those progress checks use the workflow `overview`, which summarizes the active stage, whether the gate can advance, missing evidence, open issues, meeting records, and human approval checkpoints.
+
+Use `继续团队开发` to resume a paused workflow. A bare “继续” can inspect an already active workflow, but never resumes a paused one; without an active workflow it remains ordinary conversation.
 
 Short continuation phrases work only when `.ai-workflow/active.yaml` exists. Without an active workflow, “继续” or “开始验收” alone never creates one.
 
@@ -94,7 +94,7 @@ intake → scope_check → clarification → requirement_confirmation
 
 Every concrete mode ends with an explicit user delivery confirmation. Product, engineering, and testing approval cannot complete the workflow on the user's behalf.
 
-Formal workflow routing is explicit and on demand. Start with `团队开发：<request>` or `$sdlc-orchestrator`; continue with phrases such as “继续团队开发” or “查看研发进度”. The plugin does not run a hook for ordinary user messages. At preview or delivery confirmation, criticism such as “这个结果不对” is treated as requested changes—not as approval or permission to silently edit the sample. A tool-level write guard runs only for `apply_patch`/Edit/Write operations and blocks product changes until the workflow has rewound to `prototype` or `implementation`; requirement evidence remains writable.
+Formal workflow routing is explicit and on demand. Start with `团队开发：<request>` or `$sdlc-orchestrator`; continue with phrases such as “继续团队开发” or “查看研发进度”. The plugin installs no lifecycle hooks and does not block ordinary source edits. At preview or delivery confirmation, criticism such as “这个结果不对” is treated as requested changes—not as approval or permission to silently edit the sample. The coordinator records the decision through the workflow command before changing product files; any later product change invalidates the verification binding and blocks delivery until verification runs again.
 
 Natural-language starts use temporary `auto` mode. During `scope_check`, the coordinator must explicitly check actors/permissions, goals/scope, business rules/states, data/API effects, failures/edges, compatibility/rollout, subjective choices, and acceptance/verification. It records scope, exclusions, unresolved gaps, and risk flags, then recommends `micro`, `quick`, `standard`, or `strict`. API/data changes, cross-module behavior, security/privacy, migrations, production actions, and irreversible work raise the minimum mode. An explicitly requested mode is never silently downgraded.
 
@@ -176,7 +176,7 @@ The public command names and state schema remain stable across this split. The s
 |---|---|---|
 | Coordinator call volume | Gate reviews and strict verification use atomic bundle commands. | Granular commands remain available for recovery. |
 | Source freshness | Every mode blocks delivery after post-test product edits. Strict Git metadata can be limited to reviewed delivery paths; other modes reuse clean Git index identities and hash dirty/untracked workspace content without requiring a commit. | Workflow/evidence paths are excluded; strict empty scope binds all other tracked paths. |
-| Stage routing | Explicit workflow phrases and the coordinator Skill route formal work; no hook runs on ordinary user messages. A tool-level edit hook denies accidental product patches outside development stages. | The coordinator must invoke `overview` after routing; the edit hook requires one-time trust and is a guardrail, not a host security sandbox. |
+| Stage routing | Explicit workflow phrases and the coordinator Skill route formal work; the plugin installs no lifecycle hooks. | The coordinator must invoke `overview` after routing and follow the workflow state-machine rules. |
 | Token cost | Deterministic commands run outside the model; `overview` exposes a mode budget, verification command count is enforced, and role handoffs use deltas, hashes, and evidence paths. | Codex does not expose actual per-task token accounting to this plugin; the role-handoff ceiling remains coordinator-enforced, and semantic review still consumes tokens. |
 | Role independence | Gate roles require distinct task/session references and evidence files. | References provide traceability, not cryptographic identity. |
 | User satisfaction | Every concrete mode ends with explicit user delivery confirmation. | The tool cannot infer approval from silence or authenticate the human. |

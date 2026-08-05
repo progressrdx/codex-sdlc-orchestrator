@@ -1,6 +1,6 @@
 ---
 name: sdlc-orchestrator
-description: Coordinate an explicit formal multi-role software delivery workflow with persistent state and review gates. Use when the user starts an actionable request with `团队开发：` (team development), explicitly asks to start or manage a formal/multi-role SDLC workflow, invokes `$sdlc-orchestrator`, or continues an active `.ai-workflow/active.yaml` requirement. Do not use when the user merely discusses team development, asks an ordinary question, or requests an isolated fix without explicitly choosing the workflow.
+description: "Use for explicit formal multi-role delivery: 团队开发：功能请求, $sdlc-orchestrator, or an active workflow’s clear 继续团队开发, 查看研发进度, 修改当前需求, or 开始验收 request. Read state first, then coordinate product, engineering, and testing gates. Do not use for ordinary questions, isolated fixes, or ambiguous 继续 without an active workflow."
 ---
 
 # Coordinate the SDLC workflow
@@ -14,9 +14,9 @@ Keep the main thread focused on business decisions, state transitions, and synth
 3. Treat an actionable `团队开发：<request>` prefix as an explicit formal-process request. Pass `<request>` to `start --request` without asking the user to repeat it. Equivalent explicit phrases such as “启动正式研发流程” or “使用多角色流程开发” also qualify. A discussion such as “团队开发和个人开发有什么区别” does not.
 4. If no workflow exists and the user explicitly requested the formal process, initialize it with `start --request ... --mode auto` unless the user explicitly chose a mode. Add `--title ...` only when the user gives a better short title. Add `--require-human-approval <gate>` for each configured human checkpoint.
 5. Treat an explicitly requested mode as a minimum floor. Natural-language requests without a mode always start in `auto`; determine the lowest safe concrete mode during scope analysis.
-6. When an active workflow exists, let short requests such as “继续”, “查看进度”, “修改需求”, or “开始验收” resume or inspect that workflow. Without an active workflow, those phrases alone do not start one.
-   If the user explicitly pauses the workflow, run `pause --reason ...`; paused state preserves evidence and rejects delivery mutations. Run `resume` only when the user explicitly asks to continue the formal workflow.
-7. On every turn explicitly routed to an active workflow, run `overview` before assigning work or writing files. Do not infer the current stage from the conversation, a prior summary, or the user's wording. The plugin intentionally has no per-message prompt hook; ordinary conversation must remain unaffected.
+6. When an active workflow exists, route “继续团队开发”, “查看研发进度”, “修改当前需求”, and “开始验收” to it. A bare “继续” may inspect an active workflow but must not resume a paused one; without active state, it is ordinary conversation and never creates a workflow.
+   If the user explicitly pauses the workflow, run `pause --reason ...`; paused state preserves evidence and rejects delivery mutations. Run `resume` only for an explicit formal-workflow continuation such as “继续团队开发”.
+7. On every routed workflow turn, run `overview` before assigning work or writing files. Do not infer the current stage from the conversation, a prior summary, or the user's wording. The plugin installs no lifecycle hooks; ordinary conversation must remain unaffected.
 8. Treat `start` as opening scope and risk analysis, not permission to build. Advance from intake to `scope_check`, read [scope-risk-template.md](assets/scope-risk-template.md), and inspect the request and repository before asking questions or selecting a mode.
 9. Do not initialize a formal workflow from an ordinary coding request.
 
