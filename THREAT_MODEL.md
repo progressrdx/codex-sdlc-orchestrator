@@ -31,11 +31,11 @@ An attacker may place instructions in a README, code comment, fixture, generated
 
 ### Fabricated or weakened verification
 
-A developer may modify tests, provide a misleading summary, or manufacture evidence. The state tool executes recorded build/test commands in a disposable repository snapshot, binds successful exit metadata and a bounded log hash to the tested source, and rejects commands that alter product files in that snapshot. Testing still uses an independent role because an exit code cannot prove that the chosen tests are sufficient. Developer self-test cannot satisfy independent acceptance.
+A developer may modify tests, provide a misleading summary, or manufacture evidence. The state tool constructs one immutable delivery candidate, materializes only its path/mode/blob manifest, binds successful exit metadata and a bounded log hash to that identity, and rejects changes outside explicit output paths using a manifest held outside the command tree. Strict mode also rejects ignored/untracked gaps and hidden Git index flags. Testing still uses an independent role because an exit code cannot prove that the chosen tests are sufficient. Developer self-test cannot satisfy independent acceptance.
 
 ### Verification command execution
 
-A malicious or mistaken command can access anything available to the current user. Commands are explicit workflow inputs, run only during verification in a temporary copy, have per-command process-group timeouts, fail fast, and stream bounded local logs without echoing full output into model context. Absolute and repository-escaping symbolic links are rejected before snapshot creation. The temporary copy protects against ordinary relative workspace writes; it is not operating-system isolation and cannot prevent explicit absolute-path writes, network calls, or external side effects. High-risk repositories should execute verification in a container or trusted CI and avoid commands containing secrets.
+A malicious or mistaken command can access capabilities available to the current user beyond the enforced filesystem boundary. Commands are explicit workflow inputs, run only during verification in a temporary candidate tree, have per-command process-group timeouts, fail fast, and stream bounded local logs without echoing full output into model context. Symbolic-link closure is checked before materialization; candidate inputs are read-only under macOS Seatbelt or Linux bubblewrap, while only prevalidated output roots and private scratch are writable. If that backend is unavailable, verification fails closed. This still cannot prevent network calls, process-level abuse, credential access, or external-service side effects. High-risk repositories should execute verification in a stronger container or trusted CI and avoid commands containing secrets.
 
 ### Evidence reuse or mutation
 
@@ -64,6 +64,10 @@ AI reviewers may agree on an unsafe change. Configure human checkpoints for dest
 ### State tampering and Git conflicts
 
 A user with filesystem access can edit state or artifacts, and Git merges can create semantic conflicts. Schema validation catches malformed state, but not authorized malicious edits. Review repository history and rerun affected gates after conflict resolution.
+
+### Stale or colliding plugin runtime
+
+An installed cache can lag the source tree, or two payloads can claim the same version. The plugin embeds normalized payload and entry-point hashes, records the tool identity that created and last mutated each workflow, and exposes `version` and `doctor`. Equal-version/different-payload and runtime tampering fail hard; a legitimate update still requires reinstalling and opening a new Codex task. A host attacker able to replace both code and provenance remains outside this boundary.
 
 ## Residual risks
 

@@ -14,6 +14,18 @@ description: >-
 
 Read the approved PRD, active state, open issues, and relevant repository instructions. For design work use [technical-design-template.md](assets/technical-design-template.md); when persistence changes, also use [database-design-template.md](assets/database-design-template.md).
 
+Require the coordinator to provide a persisted engineering `work_item_id`, canonical actor reference, deadline/lease, and input baseline hashes. Heartbeat long work before lease expiry. Return exact repository output paths for `complete-work`; never ask the coordinator to record output from a cancelled, timed-out, superseded, wrong-stage, or stale-baseline attempt.
+
+## Optional frontend design capability
+
+For an explicitly assigned user-facing frontend task, the coordinator may attach an external design Skill alongside `$sdlc-engineering` only after confirming that its exact name is available in the current runtime:
+
+- Use `$product-design:image-to-code` only when the user explicitly requests Product Design or faithful visual implementation and product has selected a screenshot, mockup, Figma frame, ImageGen result, or other visual target. Implement that target faithfully and responsively; ordinary frontend implementation or a text-only brief is not sufficient.
+- Use `$frontend-design` when the approved work leaves aesthetic choices open and the task needs a deliberate visual direction.
+- Use `$ui-ux-pro-max` for stack-specific layout, typography, accessibility, motion, or component guidance.
+
+If an optional Skill is unavailable, continue with repository conventions and the bundled engineering workflow, and disclose that the specialized design pass did not run. Do not invoke these Skills for backend-only work, and do not let them bypass an enabled prototype/user-feedback gate or change approved product scope.
+
 ## Design phase
 
 1. Map each design decision to requirement IDs.

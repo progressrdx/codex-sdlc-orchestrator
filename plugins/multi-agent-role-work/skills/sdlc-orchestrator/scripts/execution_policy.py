@@ -3,17 +3,29 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from delivery_candidate import (
+    CandidateError,
+    DeliveryCandidate,
+    changed_manifest_paths,
+    filesystem_manifest,
+    normalize_relative_paths,
+    prepare_output_subtrees,
+    validate_output_subtrees,
+)
 from state_store import WorkflowError, atomic_write_text
 
 
@@ -93,115 +105,179 @@ def _redact(text: str) -> str:
     return rendered
 
 
-def _snapshot_ignore(source_root: Path):
-    def ignore(directory: str, names: list[str]) -> set[str]:
-        relative = Path(directory).resolve().relative_to(source_root.resolve())
-        excluded = {name for name in names if name in {".git", ".ai-workflow", ".idea"}}
-        for name in names:
-            candidate = Path(directory) / name
-            if not (candidate.is_file() or candidate.is_dir() or candidate.is_symlink()):
-                excluded.add(name)
-        if relative == Path("docs") and "requirements" in names:
-            excluded.add("requirements")
-        return excluded
-
-    return ignore
-
-
-def _reject_external_symlinks(root: Path) -> None:
-    resolved_root = root.resolve()
-    for candidate in root.rglob("*"):
-        if not candidate.is_symlink():
-            continue
-        target = candidate.readlink()
-        try:
-            if target.is_absolute():
-                raise ValueError("absolute symbolic link")
-            resolved_target = candidate.resolve(strict=False)
-            resolved_target.relative_to(resolved_root)
-        except (OSError, RuntimeError, ValueError) as exc:
-            relative = candidate.relative_to(root)
-            raise WorkflowError(
-                "Isolated verification cannot safely copy a symbolic link outside the "
-                f"repository: {relative} -> {target}"
-            ) from exc
-
-
-def _create_snapshot(root: Path, destination: Path, ignored_paths: tuple[str, ...]) -> None:
-    _reject_external_symlinks(root)
-    shutil.copytree(
-        root,
-        destination,
-        symlinks=True,
-        ignore=_snapshot_ignore(root),
-        dirs_exist_ok=True,
-    )
+def _create_snapshot(candidate: DeliveryCandidate, destination: Path) -> None:
+    """Materialize only the frozen candidate manifest."""
     try:
-        subprocess.run(
-            ["git", "init", "--quiet"],
-            cwd=destination,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=True,
-        )
-        info_exclude = destination / ".git" / "info" / "exclude"
-        if ignored_paths:
-            with info_exclude.open("a", encoding="utf-8") as handle:
-                for item in ignored_paths:
-                    handle.write(f"/{item.rstrip('/')}\n")
-        subprocess.run(
-            ["git", "add", "-A"],
-            cwd=destination,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            check=True,
-        )
-        subprocess.run(
-            [
-                "git",
-                "-c",
-                "user.name=SDLC Verification",
-                "-c",
-                "user.email=verification@localhost",
-                "commit",
-                "--quiet",
-                "--no-gpg-sign",
-                "--allow-empty",
-                "-m",
-                "isolated verification baseline",
-            ],
-            cwd=destination,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            check=True,
-        )
-    except (OSError, subprocess.CalledProcessError) as exc:
+        candidate.materialize(destination)
+    except CandidateError as exc:
         raise WorkflowError("Unable to create an isolated verification workspace.") from exc
 
 
-def _snapshot_changes(snapshot: Path, scope_paths: tuple[str, ...]) -> list[str]:
-    command = ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"]
-    if scope_paths:
-        command.extend(("--", *scope_paths))
+def _snapshot_manifest(
+    snapshot: Path,
+    output_paths: tuple[str, ...],
+) -> dict[str, tuple[str, int, str]]:
     try:
-        raw = subprocess.check_output(command, cwd=snapshot, stderr=subprocess.DEVNULL)
-    except (OSError, subprocess.CalledProcessError) as exc:
+        return filesystem_manifest(snapshot, output_paths)
+    except CandidateError as exc:
         raise WorkflowError("Unable to verify the isolated workspace after testing.") from exc
-    entries = raw.split(b"\0")
-    changed: list[str] = []
-    index = 0
-    while index < len(entries):
-        entry = entries[index]
-        index += 1
-        if not entry:
-            continue
-        path = entry[3:].decode("utf-8", errors="replace") if len(entry) > 3 else ""
-        if entry[:2] in {b"R ", b"C "} and index < len(entries):
-            path = entries[index].decode("utf-8", errors="replace")
-            index += 1
-        if path:
-            changed.append(path)
-    return sorted(set(changed))
+
+
+def _snapshot_changes(
+    baseline: dict[str, tuple[str, int, str]],
+    snapshot: Path,
+    output_paths: tuple[str, ...],
+) -> list[str]:
+    return changed_manifest_paths(
+        baseline,
+        _snapshot_manifest(snapshot, output_paths),
+    )
+
+
+def _output_roots(snapshot: Path, output_paths: tuple[str, ...]) -> tuple[Path, ...]:
+    try:
+        roots = prepare_output_subtrees(snapshot, output_paths)
+        validate_output_subtrees(snapshot, output_paths)
+        return roots
+    except CandidateError as exc:
+        raise WorkflowError(str(exc)) from exc
+
+
+def _audit_outputs(snapshot: Path, output_paths: tuple[str, ...]) -> None:
+    try:
+        validate_output_subtrees(snapshot, output_paths)
+    except CandidateError as exc:
+        raise WorkflowError(str(exc)) from exc
+
+
+def _portable_components(path: str) -> tuple[str, ...]:
+    return tuple(
+        unicodedata.normalize("NFC", part).casefold() for part in path.split("/")
+    )
+
+
+def _portable_paths_overlap(left: str, right: str) -> bool:
+    left_parts = _portable_components(left)
+    right_parts = _portable_components(right)
+    shorter = min(len(left_parts), len(right_parts))
+    return left_parts[:shorter] == right_parts[:shorter]
+
+
+def _sandbox_profile_path(path: Path) -> str:
+    return json.dumps(os.path.realpath(path))
+
+
+def _isolation_launcher(
+    snapshot: Path,
+    output_roots: tuple[Path, ...],
+    scratch: Path,
+    profile_path: Path,
+) -> tuple[list[str], dict[str, str], str]:
+    """Return an OS-enforced launcher or fail closed.
+
+    File modes alone are not a boundary because a process running under the
+    owning UID can chmod them back.  Seatbelt (macOS) and mount namespaces
+    (bubblewrap/Linux) enforce the denial in the kernel for the whole process
+    tree, including commands running as the same UID.
+    """
+    environment = dict(os.environ)
+    environment.update(
+        {
+            "HOME": str(scratch / "home"),
+            "TMPDIR": str(scratch),
+            "TMP": str(scratch),
+            "TEMP": str(scratch),
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+    )
+    (scratch / "home").mkdir()
+    if sys.platform == "darwin":
+        executable = shutil.which("sandbox-exec")
+        if not executable:
+            raise WorkflowError(
+                "Immutable verification requires macOS sandbox-exec; refusing an unisolated run."
+            )
+        rules = [
+            "(version 1)",
+            "(allow default)",
+            '(deny file-write* (subpath "/"))',
+            '(allow file-write* (literal "/dev/null"))',
+            f"(allow file-write* (subpath {_sandbox_profile_path(scratch)}))",
+        ]
+        rules.extend(
+            f"(allow file-write* (subpath {_sandbox_profile_path(path)}))"
+            for path in output_roots
+        )
+        profile_path.write_text("\n".join(rules) + "\n", encoding="utf-8")
+        return (
+            [executable, "-f", str(profile_path), "/bin/sh", "-c"],
+            environment,
+            "macos_seatbelt",
+        )
+    if sys.platform.startswith("linux"):
+        executable = shutil.which("bwrap")
+        if not executable:
+            raise WorkflowError(
+                "Immutable verification requires bubblewrap on Linux; refusing an unisolated run."
+            )
+        launcher = [
+            executable,
+            "--die-with-parent",
+            "--ro-bind", "/", "/",
+            "--proc", "/proc",
+            "--dev", "/dev",
+            "--bind", str(scratch), str(scratch),
+        ]
+        for path in output_roots:
+            launcher.extend(("--bind", str(path), str(path)))
+        launcher.extend(("--chdir", str(snapshot), "/bin/sh", "-c"))
+        return launcher, environment, "linux_mount_namespace"
+    raise WorkflowError(
+        "This platform has no supported immutable verification sandbox; refusing an unisolated run."
+    )
+
+
+def _verify_isolation_boundary(
+    launcher: list[str],
+    environment: dict[str, str],
+    snapshot: Path,
+    protected_probe: Path,
+    scratch: Path,
+) -> None:
+    protected_probe.write_text("unchanged\n", encoding="utf-8")
+    protected_probe.chmod(0o444)
+    writable_probe = scratch / "isolation-write-probe"
+    probe_environment = dict(environment)
+    probe_environment.update(
+        {
+            "SDLC_PROTECTED_PROBE": str(protected_probe),
+            "SDLC_WRITABLE_PROBE": str(writable_probe),
+        }
+    )
+    probe = subprocess.run(
+        [
+            *launcher,
+            'if chmod u+w "$SDLC_PROTECTED_PROBE" 2>/dev/null; then exit 90; fi; '
+            'if printf compromised >> "$SDLC_PROTECTED_PROBE" 2>/dev/null; then exit 91; fi; '
+            'printf writable > "$SDLC_WRITABLE_PROBE" || exit 92',
+        ],
+        cwd=snapshot,
+        env=probe_environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    unchanged = protected_probe.read_text(encoding="utf-8") == "unchanged\n"
+    protected_mode = protected_probe.stat().st_mode & 0o777
+    writable = (
+        writable_probe.read_text(encoding="utf-8") == "writable"
+        if writable_probe.exists()
+        else False
+    )
+    if probe.returncode != 0 or not unchanged or protected_mode != 0o444 or not writable:
+        raise WorkflowError(
+            "The verification OS sandbox failed its same-UID write-denial probe; refusing to run."
+        )
 
 
 def _terminate_process_group(process: subprocess.Popen[Any]) -> None:
@@ -235,14 +311,17 @@ def _run_command(
     snapshot: Path,
     command: str,
     timeout_seconds: int,
+    launcher: list[str],
+    environment: dict[str, str],
 ) -> tuple[int, bool, int, str, int, str]:
     started = time.monotonic()
     timed_out = False
     with tempfile.TemporaryFile(mode="w+b") as output_file:
         process = subprocess.Popen(
-            command,
+            [*launcher, command],
             cwd=snapshot,
-            shell=True,
+            shell=False,
+            env=environment,
             stdout=output_file,
             stderr=subprocess.STDOUT,
             start_new_session=os.name == "posix",
@@ -329,8 +408,9 @@ def execute_verification_commands(
     *,
     scope_paths: tuple[str, ...] = (),
     ignored_paths: tuple[str, ...] = (),
+    output_paths: tuple[str, ...] = (),
 ) -> dict[str, Any]:
-    """Execute verification in a disposable snapshot and persist bounded local logs."""
+    """Execute verification against one immutable delivery candidate."""
     normalized = tuple((label, command.strip()) for label, command in commands if command.strip())
     if not normalized:
         raise WorkflowError("At least one deterministic verification command is required.")
@@ -345,6 +425,60 @@ def execute_verification_commands(
         raise WorkflowError(
             f"Mode {mode} permits at most {maximum_commands} verification commands per run."
         )
+    try:
+        normalized_scope = normalize_relative_paths(scope_paths)
+        normalized_ignored = normalize_relative_paths(ignored_paths)
+        # Source exclusions and mutable command outputs are different trust
+        # boundaries.  An ignored source path must never become writable merely
+        # because it was excluded from a selected binding.
+        normalized_outputs = normalize_relative_paths(output_paths)
+    except CandidateError as exc:
+        raise WorkflowError(str(exc)) from exc
+    if any(
+        path == ".git" or path.startswith(".git/")
+        for path in normalized_outputs
+    ):
+        raise WorkflowError("The snapshot Git metadata path cannot be an allowed output.")
+    try:
+        if mode == "strict":
+            candidate = DeliveryCandidate.from_repository(root)
+            hidden_paths = candidate.hidden_index_paths(
+                normalized_scope,
+                normalized_ignored,
+            )
+            if hidden_paths:
+                raise WorkflowError(
+                    "Delivery candidate rejects assume-unchanged or skip-worktree index flags: "
+                    + ",".join(hidden_paths)
+                )
+            changed_source = candidate.worktree_changes(
+                normalized_scope,
+                normalized_ignored,
+            )
+            if changed_source:
+                raise WorkflowError(
+                    "Delivery candidate differs from the scoped worktree; commit or remove "
+                    "untracked/ignored inputs first: " + ",".join(changed_source)
+                )
+        else:
+            candidate = DeliveryCandidate.from_workspace(root, normalized_ignored)
+    except CandidateError as exc:
+        raise WorkflowError(str(exc)) from exc
+    overlapping_outputs = sorted(
+        {
+            output
+            for output in normalized_outputs
+            if any(
+                _portable_paths_overlap(entry.path, output)
+                for entry in candidate.entries
+            )
+        }
+    )
+    if overlapping_outputs:
+        raise WorkflowError(
+            "Generated output paths must not overlap frozen candidate inputs: "
+            + ",".join(overlapping_outputs)
+        )
     workflow_id = state["workflow"]["id"]
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     log_path = root / ".ai-workflow" / workflow_id / "test-runs" / f"{run_id}.log"
@@ -352,11 +486,35 @@ def execute_verification_commands(
     results: list[dict[str, Any]] = []
     failed_reason = ""
     with tempfile.TemporaryDirectory(prefix="sdlc-verification-") as temporary:
-        snapshot = Path(temporary) / "workspace"
-        _create_snapshot(root, snapshot, ignored_paths)
+        temporary_root = Path(temporary)
+        snapshot = temporary_root / "workspace"
+        _create_snapshot(candidate, snapshot)
+        output_roots = _output_roots(snapshot, normalized_outputs)
+        scratch = temporary_root / "scratch"
+        scratch.mkdir()
+        profile_path = temporary_root / "verification.sb"
+        launcher, command_environment, isolation_backend = _isolation_launcher(
+            snapshot,
+            output_roots,
+            scratch,
+            profile_path,
+        )
+        _verify_isolation_boundary(
+            launcher,
+            command_environment,
+            snapshot,
+            temporary_root / "protected-probe",
+            scratch,
+        )
+        baseline_manifest = _snapshot_manifest(snapshot, normalized_outputs)
         for label, command in normalized:
+            _audit_outputs(snapshot, normalized_outputs)
             exit_code, timed_out, duration_ms, output, output_bytes, output_hash = _run_command(
-                snapshot, command, timeout_seconds
+                snapshot,
+                command,
+                timeout_seconds,
+                launcher,
+                command_environment,
             )
             sanitized_command = _redact(command)
             results.append(
@@ -374,10 +532,19 @@ def execute_verification_commands(
                 f"## {label}\ncommand: {sanitized_command}\nexit_code: {exit_code}\n"
                 f"duration_ms: {duration_ms}\ntimed_out: {str(timed_out).lower()}\n\n{output}\n"
             )
-            changed_paths = _snapshot_changes(snapshot, scope_paths)
+            _audit_outputs(snapshot, normalized_outputs)
+            # The oracle is an external content manifest, not the mutable Git index
+            # or refs inside the command's workspace.  A command cannot hide source
+            # mutation with git add/commit/reset or ignore rules.
+            changed_paths = _snapshot_changes(
+                baseline_manifest,
+                snapshot,
+                normalized_outputs,
+            )
             if changed_paths:
                 failed_reason = (
-                    "verification command changed product files in the isolated workspace; "
+                    "verification command changed product files; changed candidate inputs "
+                    "in the isolated workspace; "
                     "original workspace was not modified: " + ",".join(changed_paths[:20])
                 )
                 break
@@ -385,7 +552,7 @@ def execute_verification_commands(
                 failed_reason = f"{label} exited with {exit_code}"
                 break
     rendered = (
-        "# Deterministic verification run\n\nisolation: temporary_snapshot\n\n"
+        f"# Deterministic verification run\n\nisolation: {isolation_backend}\n\n"
         + "\n".join(sections)
     )
     encoded = rendered.encode("utf-8")
@@ -400,6 +567,8 @@ def execute_verification_commands(
     execution = {
         "status": "pass" if not failed_reason else "fail",
         "isolation": "temporary_snapshot",
+        "isolation_backend": isolation_backend,
+        "candidate": candidate.metadata(),
         "commands": results,
         "log_path": str(relative_log),
         "log_sha256": hashlib.sha256(log_path.read_bytes()).hexdigest(),

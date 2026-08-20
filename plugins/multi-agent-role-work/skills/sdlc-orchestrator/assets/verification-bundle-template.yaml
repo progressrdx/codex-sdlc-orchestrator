@@ -2,10 +2,18 @@
 #
 # Submit once with:
 # workflow.py submit-verification --manifest <this-file>
+# Replace both request-control fields before submission. The revision comes
+# from the immediately preceding status/overview read; reusing the key with a
+# different payload is rejected.
+idempotency_key: verification-round-001
+expected_revision: 0
 #
 # Source paths are repository-relative directories or files that define the
 # delivery under test. Include every production and test path whose change can
 # affect the result. An empty list binds the whole repository.
+# This ID must be a completed testing work item whose outputs bind both the
+# consolidated verification report and the final journey report.
+work_item_id: testing-verification-attempt-001
 source:
   evidence: docs/requirements/<workflow-id>/08-source-verification.md
   build_command: "<exact command that was executed>"
@@ -16,6 +24,10 @@ source:
   # Optional tracked generated/vendor paths that do not affect delivery behavior.
   # The recorded state preserves this list for every freshness check.
   ignore_paths: []
+  # Source exclusions are never writable. List only deterministic generated
+  # directories that build/test commands may change in the isolated candidate.
+  output_paths:
+    - build/
 
 criteria:
   - id: AC-001
@@ -23,6 +35,11 @@ criteria:
     evidence: docs/requirements/<workflow-id>/tests/AC-001.md
   # A not_applicable verdict also requires:
   # scope_change_id: SC-001
+
+# One consolidated independent report for this candidate and all criterion
+# results. It is registered as verification_report by the same atomic command.
+report:
+  evidence: docs/requirements/<workflow-id>/08-verification-report.md
 
 # Profiles: web, desktop, api, cli, library, data.
 # Use pass, fail, blocked, or not_applicable truthfully. The bundle is recorded

@@ -29,11 +29,27 @@ SCRIPT = (
 
 
 class WorkflowToolTests(unittest.TestCase):
+    ARTIFACT_ROLES = {
+        "clarification_questions": "product",
+        "prd": "product",
+        "technical_design": "engineering",
+        "database_design": "engineering",
+        "test_plan": "testing",
+        "test_cases": "testing",
+        "release_plan": "engineering",
+        "prototype": "engineering",
+        "implementation": "engineering",
+        "verification_report": "testing",
+        "journey_report": "testing",
+        "traceability": "testing",
+    }
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()
         self.meeting_counter = 0
         self.risk_assessment_counter = 0
+        self.work_counter = 0
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -198,6 +214,13 @@ class WorkflowToolTests(unittest.TestCase):
         text: str | None = None,
     ) -> None:
         path = self.write_artifact(filename, text) if text is not None else self.write_artifact(filename)
+        work_item_id = None
+        role = self.ARTIFACT_ROLES.get(name)
+        if role and status in {"ready", "not_applicable"}:
+            work_item_id, _ = self.complete_role_work(
+                role,
+                {name: path},
+            )
         self.run_tool(
             "record-artifact",
             "--name",
@@ -206,9 +229,61 @@ class WorkflowToolTests(unittest.TestCase):
             str(path.relative_to(self.root)),
             "--status",
             status,
+            *(["--work-item-id", work_item_id] if work_item_id else []),
             *(["--notes", notes] if notes else []),
             *(["--test-command", "true"] if name == "verification_report" and status == "ready" else []),
         )
+
+    def complete_role_work(
+        self,
+        role: str,
+        outputs: dict[str, Path],
+        *,
+        actor_ref: str | None = None,
+    ) -> tuple[str, str]:
+        self.work_counter += 1
+        work_item_id = f"{role}-work-{self.work_counter:03d}"
+        actor = actor_ref or f"{role}-agent-{self.work_counter:03d}"
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        stage = state["workflow"]["current_stage"]
+        budget = {"micro": 2, "quick": 3, "standard": 3, "strict": 3}[
+            state["workflow"]["mode"]
+        ]
+        used = sum(
+            1
+            for item in state.get("work_items", {}).values()
+            if item.get("stage") == stage and item.get("status") != "superseded"
+        )
+        override_args: list[str] = []
+        if used >= budget:
+            override = self.write_artifact(
+                f"requirements/REQ-test-flow/work-overrides/{work_item_id}.md",
+                "# Role handoff override\n\nA further independent attempt is required by the current test baseline.\n",
+            )
+            override_args = ["--override-evidence", str(override.relative_to(self.root))]
+        self.run_tool(
+            "begin-work",
+            "--work-item-id",
+            work_item_id,
+            "--role",
+            role,
+            "--actor-ref",
+            actor,
+            "--deadline-at",
+            "2099-01-01T00:00:00Z",
+            *override_args,
+        )
+        self.run_tool(
+            "complete-work",
+            "--work-item-id",
+            work_item_id,
+            *(
+                item
+                for name, path in outputs.items()
+                for item in ("--output", f"{name}={path.relative_to(self.root)}")
+            ),
+        )
+        return work_item_id, actor
 
     def record_clarification(self) -> None:
         self.record(
@@ -367,6 +442,11 @@ class WorkflowToolTests(unittest.TestCase):
                 f"# Review: {gate.replace('_', ' ')} / {role}\n\nInputs were checked against the gate criteria. "
                 "No blocking findings remain.\n\n## Verdict\n\napprove\n",
             )
+            work_item_id, actor_ref = self.complete_role_work(
+                role,
+                {f"review:{gate}:{role}": evidence},
+                actor_ref=f"{role}-agent-{self.work_counter + 1:03d}",
+            )
             self.run_tool(
                 "decide",
                 "--gate",
@@ -374,7 +454,9 @@ class WorkflowToolTests(unittest.TestCase):
                 "--role",
                 role,
                 "--actor-ref",
-                f"{role}-agent",
+                actor_ref,
+                "--work-item-id",
+                work_item_id,
                 "--verdict",
                 "approve",
                 "--evidence",
@@ -576,7 +658,7 @@ class WorkflowToolTests(unittest.TestCase):
             str(rejected_feedback.relative_to(self.root)),
             expected=2,
         )
-        self.assertIn("explicit user approval", rejected.stderr)
+        self.assertIn("must be recorded through record-user-feedback", rejected.stderr)
 
         self.record_user_feedback()
         self.run_tool("advance")
@@ -653,6 +735,23 @@ class WorkflowToolTests(unittest.TestCase):
         self.run_tool("advance")
         blocked = self.run_tool("advance", expected=2)
         self.assertIn("artifact:delivery_confirmation", blocked.stderr)
+        generic_confirmation = self.write_artifact(
+            "requirements/REQ-test-flow/generic-delivery-confirmation.md"
+        )
+        rejected = self.run_tool(
+            "record-artifact",
+            "--name",
+            "delivery_confirmation",
+            "--path",
+            str(generic_confirmation.relative_to(self.root)),
+            expected=2,
+        )
+        self.assertIn(
+            "must be recorded through record-delivery-confirmation",
+            rejected.stderr,
+        )
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual([], state["delivery_confirmation_records"])
         self.confirm_delivery()
         completed = self.run_tool("advance")
         self.assertIn("delivery_confirmation -> completed", completed.stdout)
@@ -761,10 +860,41 @@ class WorkflowToolTests(unittest.TestCase):
             "echo changed > app.py",
             expected=2,
         )
-        self.assertIn("changed product files", rejected.stderr)
+        self.assertIn("test exited with", rejected.stderr)
         self.assertEqual("original\n", source.read_text(encoding="utf-8"))
         state = json.loads(self.run_tool("status", "--json").stdout)
         self.assertNotIn("verification_report", state["artifacts"])
+
+    def test_scoped_verification_cannot_rewrite_files_outside_scope(self) -> None:
+        workflow_module = self.workflow_module()
+        self.initialize_git_source()
+        helper = self.root / "test_helper.py"
+        helper.write_text("ORIGINAL = True\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(self.root), "add", "test_helper.py"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-qm", "test helper"],
+            check=True,
+        )
+        state = {
+            "workflow": {"id": "REQ-test-flow", "mode": "strict"},
+            "verification_snapshot": {},
+            "source_revision": {},
+        }
+        with self.assertRaises(workflow_module.WorkflowError) as raised:
+            workflow_module.execute_verification_commands(
+                self.root,
+                state,
+                (
+                    ("build", "echo 'TAMPERED = True' > test_helper.py"),
+                    ("test", "grep -q TAMPERED test_helper.py"),
+                ),
+                scope_paths=("app.py",),
+            )
+        self.assertIn("build exited with", str(raised.exception))
+        self.assertEqual("ORIGINAL = True\n", helper.read_text(encoding="utf-8"))
 
     def test_failed_mutating_verification_leaves_original_workspace_unchanged(self) -> None:
         self.init("micro")
@@ -786,7 +916,7 @@ class WorkflowToolTests(unittest.TestCase):
             "echo changed > app.py; exit 7",
             expected=2,
         )
-        self.assertIn("changed product files", rejected.stderr)
+        self.assertIn("test exited with 7", rejected.stderr)
         self.assertEqual("original\n", source.read_text(encoding="utf-8"))
 
     def test_timed_out_verification_terminates_background_processes(self) -> None:
@@ -823,12 +953,17 @@ class WorkflowToolTests(unittest.TestCase):
         self.run_tool("advance")
         report = self.write_artifact("requirements/REQ-test-flow/verification-background.md")
         marker = self.root / "detached-process-survived.txt"
+        verification_work, _ = self.complete_role_work(
+            "testing", {"verification_report": report}
+        )
         self.run_tool(
             "record-artifact",
             "--name",
             "verification_report",
             "--path",
             str(report.relative_to(self.root)),
+            "--work-item-id",
+            verification_work,
             "--test-command",
             f"(sleep 2; echo survived > '{marker}') &",
         )
@@ -871,12 +1006,17 @@ class WorkflowToolTests(unittest.TestCase):
         self.record("implementation", "requirements/REQ-test-flow/implementation.md")
         self.run_tool("advance")
         report = self.write_artifact("requirements/REQ-test-flow/verification-large.md")
+        verification_work, _ = self.complete_role_work(
+            "testing", {"verification_report": report}
+        )
         self.run_tool(
             "record-artifact",
             "--name",
             "verification_report",
             "--path",
             str(report.relative_to(self.root)),
+            "--work-item-id",
+            verification_work,
             "--test-command",
             "python3 -c \"print('password=do-not-store'); print('x' * 2100000)\"",
         )
@@ -1267,6 +1407,19 @@ class WorkflowToolTests(unittest.TestCase):
             "## Rationale\n\nThe delivery is reversible and independently verifiable.\n\n"
             "## Expiry\n\nThis decision expires on 2099-12-31 and must then be reassessed.\n",
         )
+        invalid_expiry = self.run_tool(
+            "accept-escalation-risk",
+            "--approved-by",
+            "Alice",
+            "--reason",
+            "The reversible dependency risk is acceptable for this bounded change.",
+            "--expires-on",
+            "2099-99-99",
+            "--evidence",
+            str(acceptance.relative_to(self.root)),
+            expected=2,
+        )
+        self.assertIn("valid YYYY-MM-DD date", invalid_expiry.stderr)
         accepted = self.run_tool(
             "accept-escalation-risk",
             "--approved-by",
@@ -1290,6 +1443,30 @@ class WorkflowToolTests(unittest.TestCase):
         workflow_module.save_state(state_path, state)
         expired = self.run_tool("advance", expected=2)
         self.assertIn("escalation_acceptance_expired:RSK-001", expired.stderr)
+        resolution = self.write_artifact(
+            "requirements/REQ-test-flow/risks/RSK-001-resolution.md",
+            "# RSK-001 resolved\n\n## Resolver\n\nProduct resolved the dependency risk.\n\n"
+            "## Independent verifier\n\nTesting independently verified the resolution.\n\n"
+            "## Outcome\n\nThe external dependency is no longer required.\n",
+        )
+        self.run_tool(
+            "resolve-risk",
+            "--risk-id",
+            "RSK-001",
+            "--resolution",
+            "Removed the external dependency.",
+            "--resolved-by",
+            "product",
+            "--verified-by",
+            "testing",
+            "--evidence",
+            str(resolution.relative_to(self.root)),
+        )
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual("resolved", state["risk_reports"][0]["status"])
+        self.assertEqual("cleared", state["escalation"]["status"])
+        no_longer_expired = self.run_tool("advance", expected=2)
+        self.assertNotIn("escalation_acceptance_expired", no_longer_expired.stderr)
 
     def test_strict_escalation_adds_human_readiness_and_acceptance_gates(self) -> None:
         self.init("quick")
@@ -1426,6 +1603,8 @@ class WorkflowToolTests(unittest.TestCase):
             "product",
             "--actor-ref",
             "product-agent",
+            "--work-item-id",
+            "product-review-work",
             "--verdict",
             "approve",
             "--evidence",
@@ -1485,12 +1664,15 @@ class WorkflowToolTests(unittest.TestCase):
         self.init("quick")
         self.complete_discovery()
         design = self.write_artifact("requirements/REQ-test-flow/shared.md")
+        design_work, _ = self.complete_role_work("engineering", {"technical_design": design})
         self.run_tool(
             "record-artifact",
             "--name",
             "technical_design",
             "--path",
             str(design.relative_to(self.root)),
+            "--work-item-id",
+            design_work,
         )
         reused_artifact = self.run_tool(
             "record-artifact",
@@ -1515,6 +1697,10 @@ class WorkflowToolTests(unittest.TestCase):
         testing = self.write_artifact(
             "requirements/REQ-test-flow/reviews/testing.md", shared_review_text
         )
+        engineering_work, engineering_actor = self.complete_role_work(
+            "engineering",
+            {"review:readiness_review:engineering": engineering},
+        )
         self.run_tool(
             "decide",
             "--gate",
@@ -1522,7 +1708,9 @@ class WorkflowToolTests(unittest.TestCase):
             "--role",
             "engineering",
             "--actor-ref",
-            "engineering-agent",
+            engineering_actor,
+            "--work-item-id",
+            engineering_work,
             "--verdict",
             "approve",
             "--evidence",
@@ -1541,7 +1729,9 @@ class WorkflowToolTests(unittest.TestCase):
             "--role",
             "testing",
             "--actor-ref",
-            "engineering-agent",
+            engineering_actor,
+            "--work-item-id",
+            "missing-testing-work",
             "--verdict",
             "approve",
             "--evidence",
@@ -1549,6 +1739,10 @@ class WorkflowToolTests(unittest.TestCase):
             expected=2,
         )
         self.assertIn("already used by engineering", reused_actor.stderr)
+        testing_work, testing_actor = self.complete_role_work(
+            "testing",
+            {"review:readiness_review:testing": testing},
+        )
         reused_review = self.run_tool(
             "decide",
             "--gate",
@@ -1556,7 +1750,9 @@ class WorkflowToolTests(unittest.TestCase):
             "--role",
             "testing",
             "--actor-ref",
-            "testing-agent",
+            testing_actor,
+            "--work-item-id",
+            testing_work,
             "--verdict",
             "approve",
             "--evidence",
@@ -1577,6 +1773,10 @@ class WorkflowToolTests(unittest.TestCase):
             "## Findings\n\nThe design evidence was reviewed from the engineering perspective.\n\n"
             "## Verdict\n\napprove\n",
         )
+        review_work, review_actor = self.complete_role_work(
+            "engineering",
+            {"review:readiness_review:engineering": review},
+        )
         self.run_tool(
             "decide",
             "--gate",
@@ -1584,7 +1784,9 @@ class WorkflowToolTests(unittest.TestCase):
             "--role",
             "engineering",
             "--actor-ref",
-            "engineering-agent",
+            review_actor,
+            "--work-item-id",
+            review_work,
             "--verdict",
             "approve",
             "--evidence",
@@ -1791,6 +1993,43 @@ class WorkflowToolTests(unittest.TestCase):
         scoped = workflow_module.current_source_fingerprint(self.root, ("other-module",))
         self.assertEqual([], scoped["dirty_paths"])
 
+    def test_source_fingerprint_detects_rename_from_ignored_to_product_path(self) -> None:
+        workflow_module = self.workflow_module()
+        self.initialize_git_source()
+        ignored_source = self.root / "docs" / "requirements" / "legacy-helper.py"
+        ignored_source.parent.mkdir(parents=True, exist_ok=True)
+        ignored_source.write_text("VALUE = 'staged'\n", encoding="utf-8")
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.root),
+                "add",
+                "-f",
+                str(ignored_source.relative_to(self.root)),
+            ],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-qm", "ignored source"],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.root),
+                "mv",
+                str(ignored_source.relative_to(self.root)),
+                "renamed-product.py",
+            ],
+            check=True,
+        )
+
+        fingerprint = workflow_module.current_source_fingerprint(self.root)
+
+        self.assertIn("renamed-product.py", fingerprint["dirty_paths"])
+
     def test_journey_can_record_blocked_result_without_claiming_success(self) -> None:
         self.init("strict")
         source = self.initialize_git_source()
@@ -1835,6 +2074,9 @@ class WorkflowToolTests(unittest.TestCase):
             "## content_semantics and interactions\n\ncontent_semantics pass; interactions blocked.\n\n"
             "## release_hygiene and source_truth\n\nrelease_hygiene pass; source_truth pass.\n",
         )
+        journey_work, _ = self.complete_role_work(
+            "testing", {"journey_report": journey}
+        )
         recorded = self.run_tool(
             "record-user-journey",
             "--profile",
@@ -1853,6 +2095,8 @@ class WorkflowToolTests(unittest.TestCase):
             "source_truth=pass",
             "--evidence",
             str(journey.relative_to(self.root)),
+            "--work-item-id",
+            journey_work,
         )
         self.assertIn("non-passing checks: interactions", recorded.stdout)
         state = json.loads(self.run_tool("status", "--json").stdout)
@@ -1884,16 +2128,30 @@ class WorkflowToolTests(unittest.TestCase):
             "# AC-001 verification\n\n## Expected\n\nThe CLI reports the correct result.\n\n"
             "## Executed\n\nThe behavior was exercised.\n\n## Verdict\n\nAC-001 pass.\n",
         )
+        verification_report = self.write_artifact(
+            "requirements/REQ-test-flow/verification-bundle.md",
+            "# Independent verification report\n\n## Source candidate\n\nThe exact committed candidate was built and tested.\n\n"
+            "## Acceptance results\n\nAC-001 passed against the same candidate.\n\n"
+            "## Conclusion\n\nIndependent verification passed without replacing the delivery source.\n",
+        )
         journey = self.write_artifact(
             "requirements/REQ-test-flow/journey-bundle.md",
             "# CLI journey\n\n## launch and core_outcomes\n\nlaunch pass; core_outcomes pass.\n\n"
             "## content_semantics and interactions\n\ncontent_semantics pass; interactions pass.\n\n"
             "## release_hygiene and source_truth\n\nrelease_hygiene pass; source_truth pass.\n",
         )
+        verification_work, _ = self.complete_role_work(
+            "testing",
+            {
+                "verification_report": verification_report,
+                "journey_report": journey,
+            },
+        )
         manifest = self.root / "docs" / "requirements" / "REQ-test-flow" / "verification.json"
         manifest.write_text(
             json.dumps(
                 {
+                    "work_item_id": verification_work,
                     "source": {
                         "evidence": str(source_evidence.relative_to(self.root)),
                         "build_command": "true",
@@ -1908,6 +2166,9 @@ class WorkflowToolTests(unittest.TestCase):
                             "evidence": str(criterion.relative_to(self.root)),
                         }
                     ],
+                    "report": {
+                        "evidence": str(verification_report.relative_to(self.root)),
+                    },
                     "journey": {
                         "profile": "cli",
                         "evidence": str(journey.relative_to(self.root)),
@@ -1936,8 +2197,10 @@ class WorkflowToolTests(unittest.TestCase):
         self.assertIn("whole number of seconds", invalid.stderr)
         self.assertNotIn("Traceback", invalid.stderr)
         invalid_manifest["source"]["command_timeout"] = 300
-        manifest.write_text(json.dumps(invalid_manifest), encoding="utf-8")
         before = json.loads(self.run_tool("status", "--json").stdout)["revision"]
+        invalid_manifest["idempotency_key"] = "verification-round-001"
+        invalid_manifest["expected_revision"] = before
+        manifest.write_text(json.dumps(invalid_manifest), encoding="utf-8")
         self.run_tool(
             "submit-verification",
             "--manifest",
@@ -1950,6 +2213,22 @@ class WorkflowToolTests(unittest.TestCase):
         self.assertEqual(["app.py"], after["source_revision"]["scope_paths"])
         self.assertEqual(["generated"], after["source_revision"]["ignored_paths"])
         self.assertEqual("pass", after["source_revision"]["test_execution"]["status"])
+        self.assertEqual(
+            str(verification_report.relative_to(self.root)),
+            after["artifacts"]["verification_report"]["path"],
+        )
+        self.assertEqual(
+            str(journey.relative_to(self.root)),
+            after["artifacts"]["journey_report"]["path"],
+        )
+        replayed = self.run_tool(
+            "submit-verification",
+            "--manifest",
+            str(manifest.relative_to(self.root)),
+        )
+        self.assertIn("already submitted", replayed.stdout)
+        replay_state = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual(after["revision"], replay_state["revision"])
 
     def test_submit_gate_review_registers_decisions_and_meeting_atomically(self) -> None:
         self.init("quick")
@@ -1967,33 +2246,47 @@ class WorkflowToolTests(unittest.TestCase):
             "# readiness_review testing\n\nThe test plan is executable against the approved scope.\n\n"
             "## Findings\n\nNo blocking testing findings remain.\n\n## Verdict\n\napprove\n",
         )
-        meeting = self.write_artifact(
-            "requirements/REQ-test-flow/meetings/MTG-readiness-bundle.md",
-            "# readiness_review meeting\n\n## Participants\n\nengineering and testing\n\n"
-            "## Decisions and rationale\n\nBoth independent verdicts were retained.\n\n"
-            "## Outcome\n\napproved\n",
+        engineering_work, _ = self.complete_role_work(
+            "engineering",
+            {"review:readiness_review:engineering": engineering},
+            actor_ref="engineering-agent",
+        )
+        testing_work, _ = self.complete_role_work(
+            "testing",
+            {"review:readiness_review:testing": testing},
+            actor_ref="testing-agent",
         )
         bundle = {
+            "idempotency_key": "readiness-review-round-001",
             "gate": "readiness_review",
             "decisions": [
                 {
                     "role": "engineering",
                     "actor_ref": "engineering-agent",
+                    "work_item_id": engineering_work,
                     "verdict": "approve",
                     "evidence": str(engineering.relative_to(self.root)),
+                    "findings": [],
                 },
                 {
                     "role": "testing",
                     "actor_ref": "engineering-agent",
+                    "work_item_id": testing_work,
                     "verdict": "approve",
                     "evidence": str(testing.relative_to(self.root)),
+                    "findings": [],
                 },
             ],
             "meeting": {
                 "title": "Readiness review",
                 "participants": ["engineering", "testing"],
                 "outcome": "approved",
-                "path": str(meeting.relative_to(self.root)),
+                "summary": "Engineering and testing reviewed the same readiness baseline.",
+                "decision": "Proceed to implementation after retaining both approvals.",
+                "rationale": "The design is feasible and the planned verification is executable.",
+                "action_owners": ["engineering: implementation", "testing: verification"],
+                "open_questions": [],
+                "next_step": "Advance the readiness gate.",
             },
         }
         manifest = self.write_artifact(
@@ -2001,6 +2294,8 @@ class WorkflowToolTests(unittest.TestCase):
             json.dumps(bundle),
         )
         before = json.loads(self.run_tool("status", "--json").stdout)["revision"]
+        bundle["expected_revision"] = before
+        manifest.write_text(json.dumps(bundle), encoding="utf-8")
         rejected = self.run_tool(
             "submit-gate-review",
             "--manifest",
@@ -2026,6 +2321,21 @@ class WorkflowToolTests(unittest.TestCase):
             set(recorded["decisions"]["readiness_review"]),
         )
         self.assertEqual("readiness_review", recorded["meetings"][-1]["type"])
+        self.assertTrue(recorded["meetings"][-1]["inline"])
+        self.assertEqual(
+            str(manifest.relative_to(self.root)),
+            recorded["meetings"][-1]["path"],
+        )
+        meeting_count = len(recorded["meetings"])
+        replayed = self.run_tool(
+            "submit-gate-review",
+            "--manifest",
+            str(manifest.relative_to(self.root)),
+        )
+        self.assertIn("already submitted", replayed.stdout)
+        replay_state = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual(recorded["revision"], replay_state["revision"])
+        self.assertEqual(meeting_count, len(replay_state["meetings"]))
         self.run_tool("advance")
 
     def test_scope_change_authorizes_not_applicable_criterion(self) -> None:
@@ -2088,6 +2398,9 @@ class WorkflowToolTests(unittest.TestCase):
             "## Evidence\n\nThe user-approved deferral was reviewed.\n\n"
             "## Verdict\n\nAC-001 not applicable.\n",
         )
+        verdict_work, _ = self.complete_role_work(
+            "testing", {"criterion_verdict:AC-001": verdict}
+        )
         self.run_tool(
             "record-criterion-verdict",
             "--criterion-id",
@@ -2098,6 +2411,8 @@ class WorkflowToolTests(unittest.TestCase):
             "SC-001",
             "--evidence",
             str(verdict.relative_to(self.root)),
+            "--work-item-id",
+            verdict_work,
         )
         final_state = json.loads(self.run_tool("status", "--json").stdout)
         self.assertEqual(
@@ -2212,7 +2527,7 @@ class WorkflowToolTests(unittest.TestCase):
     def test_state_revision_increments_and_schema_is_validated(self) -> None:
         self.init("quick")
         initial = json.loads(self.run_tool("status", "--json").stdout)
-        self.assertEqual(10, initial["schema_version"])
+        self.assertEqual(11, initial["schema_version"])
         self.assertEqual(1, initial["revision"])
 
         self.run_tool("advance")
@@ -2254,7 +2569,7 @@ class WorkflowToolTests(unittest.TestCase):
         state_path.write_text(json.dumps(state), encoding="utf-8")
 
         migrated = json.loads(self.run_tool("status", "--json").stdout)
-        self.assertEqual(10, migrated["schema_version"])
+        self.assertEqual(11, migrated["schema_version"])
         self.assertNotIn("scope_check", migrated["workflow"]["flow_stages"])
         self.run_tool("advance")
         self.assertIn("Stage: clarification", self.run_tool("status").stdout)
@@ -2267,7 +2582,7 @@ class WorkflowToolTests(unittest.TestCase):
         state["workflow"]["flow_stages"].remove("delivery_confirmation")
         state_path.write_text(json.dumps(state), encoding="utf-8")
         migrated = json.loads(self.run_tool("status", "--json").stdout)
-        self.assertEqual(10, migrated["schema_version"])
+        self.assertEqual(11, migrated["schema_version"])
         self.assertEqual(
             ["intake", "scope_check", "implementation", "verification", "delivery_confirmation", "completed"],
             migrated["workflow"]["flow_stages"],
@@ -2282,9 +2597,56 @@ class WorkflowToolTests(unittest.TestCase):
         state.pop("repository_context", None)
         state_path.write_text(json.dumps(state), encoding="utf-8")
         migrated = json.loads(self.run_tool("status", "--json").stdout)
-        self.assertEqual(10, migrated["schema_version"])
+        self.assertEqual(11, migrated["schema_version"])
         self.assertEqual({}, migrated["verification_snapshot"])
         self.assertEqual({}, migrated["repository_context"])
+
+    def test_schema_v10_role_evidence_is_preserved_but_cannot_pass_v11_gate(self) -> None:
+        self.init("standard")
+        state_path = self.root / ".ai-workflow" / "REQ-test-flow" / "state.yaml"
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        legacy_prd = self.write_artifact(
+            "requirements/REQ-test-flow/legacy-prd.md",
+            "# Legacy PRD\n\n## Scope\n\nLegacy role output.\n\n## Acceptance\n\nLegacy acceptance criteria.\n",
+        )
+        state["schema_version"] = 10
+        state["workflow"]["current_stage"] = "prd"
+        state["artifacts"]["prd"] = {
+            "path": str(legacy_prd.relative_to(self.root)),
+            "status": "ready",
+            "evidence_sha256": hashlib.sha256(legacy_prd.read_bytes()).hexdigest(),
+        }
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        overview = json.loads(self.run_tool("overview", "--json").stdout)
+
+        self.assertIn("artifact:prd", overview["missing"])
+        migrated = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertTrue(migrated["artifacts"]["prd"]["legacy_unbound"])
+
+    def test_explicit_id_cannot_mutate_a_non_active_workflow(self) -> None:
+        self.init("micro")
+        self.run_tool("deactivate", "--reason", "Switch workflow.")
+        self.run_tool(
+            "init",
+            "--id",
+            "REQ-active-two",
+            "--title",
+            "Second workflow",
+            "--mode",
+            "micro",
+            "--request",
+            "Own the active pointer.",
+        )
+        first_path = self.root / ".ai-workflow" / "REQ-test-flow" / "state.yaml"
+        before = first_path.read_bytes()
+
+        rejected = self.run_tool(
+            "--id", "REQ-test-flow", "advance", expected=2
+        )
+
+        self.assertIn("refusing to mutate non-active workflow", rejected.stderr)
+        self.assertEqual(before, first_path.read_bytes())
 
     def test_pause_suppresses_mutations_until_resume(self) -> None:
         self.init("micro")
@@ -2369,6 +2731,7 @@ class WorkflowToolTests(unittest.TestCase):
         stale_artifact = self.run_tool("advance", expected=2)
         self.assertIn("artifact:prd", stale_artifact.stderr)
 
+        self.run_tool("reopen", "--stage", "prd", "--reason", "Replace stale PRD evidence")
         self.record("prd", "requirements/REQ-test-flow/01-prd-v2.md")
         self.run_tool("advance")
         roles = ("product", "engineering", "testing")
@@ -2381,7 +2744,7 @@ class WorkflowToolTests(unittest.TestCase):
         stale_review = self.run_tool("advance", expected=2)
         self.assertIn("approval:prd_review:product", stale_review.stderr)
 
-    def test_changed_upstream_artifact_automatically_rewinds_workflow(self) -> None:
+    def test_changed_upstream_artifact_requires_explicit_reopen(self) -> None:
         self.init()
         self.complete_discovery()
         self.record("prd", "requirements/REQ-test-flow/01-prd.md")
@@ -2391,6 +2754,16 @@ class WorkflowToolTests(unittest.TestCase):
         self.record("technical_design", "requirements/REQ-test-flow/03-design.md")
         self.record("test_plan", "requirements/REQ-test-flow/05-test-plan.md")
         self.run_tool("advance")
+        rejected = self.run_tool(
+            "record-artifact",
+            "--name",
+            "prd",
+            "--path",
+            str(self.write_artifact("requirements/REQ-test-flow/01-prd-late.md").relative_to(self.root)),
+            expected=2,
+        )
+        self.assertIn("Reopen explicitly", rejected.stderr)
+        self.run_tool("reopen", "--stage", "prd", "--reason", "Business scope changed")
         self.record("prd", "requirements/REQ-test-flow/01-prd-v2.md")
 
         status = self.run_tool("status", "--json")
@@ -2398,7 +2771,263 @@ class WorkflowToolTests(unittest.TestCase):
         self.assertEqual("prd", state["workflow"]["current_stage"])
         self.assertEqual("superseded", state["artifacts"]["technical_design"]["status"])
         self.assertEqual("superseded", state["artifacts"]["test_plan"]["status"])
-        self.assertIn("change_control_required", [event["event"] for event in state["history"]])
+        self.assertIn("reopened", [event["event"] for event in state["history"]])
+
+    def test_role_owned_artifact_requires_completed_work_and_replays_idempotently(self) -> None:
+        self.init("quick")
+        self.complete_discovery()
+        artifact = self.write_artifact("requirements/REQ-test-flow/03-role-owned.md")
+
+        missing = self.run_tool(
+            "record-artifact",
+            "--name",
+            "technical_design",
+            "--path",
+            str(artifact.relative_to(self.root)),
+            expected=2,
+        )
+        self.assertIn("work-item-id", missing.stderr)
+
+        self.run_tool(
+            "begin-work",
+            "--work-item-id",
+            "engineering-cancelled",
+            "--role",
+            "engineering",
+            "--actor-ref",
+            "engineering-cancelled-agent",
+            "--deadline-at",
+            "2099-01-01T00:00:00Z",
+        )
+        self.run_tool(
+            "cancel-work",
+            "--work-item-id",
+            "engineering-cancelled",
+            "--reason",
+            "The attempt was intentionally cancelled.",
+        )
+        cancelled = self.run_tool(
+            "record-artifact",
+            "--name",
+            "technical_design",
+            "--path",
+            str(artifact.relative_to(self.root)),
+            "--work-item-id",
+            "engineering-cancelled",
+            expected=2,
+        )
+        self.assertIn("cancelled work item", cancelled.stderr)
+
+        work_item_id, _ = self.complete_role_work(
+            "engineering", {"technical_design": artifact}
+        )
+        self.run_tool(
+            "record-artifact",
+            "--name",
+            "technical_design",
+            "--path",
+            str(artifact.relative_to(self.root)),
+            "--work-item-id",
+            work_item_id,
+        )
+        recorded = json.loads(self.run_tool("status", "--json").stdout)
+        revision = recorded["revision"]
+        self.assertEqual(
+            work_item_id,
+            recorded["artifacts"]["technical_design"]["producer_work_item_id"],
+        )
+
+        replay = self.run_tool(
+            "record-artifact",
+            "--name",
+            "technical_design",
+            "--path",
+            str(artifact.relative_to(self.root)),
+            "--work-item-id",
+            work_item_id,
+        )
+        self.assertIn("already recorded", replay.stdout)
+        self.assertEqual(
+            revision,
+            json.loads(self.run_tool("status", "--json").stdout)["revision"],
+        )
+
+    def test_rejected_review_creates_one_stable_issue_and_replays_idempotently(self) -> None:
+        self.init("quick")
+        self.complete_discovery()
+        self.record("technical_design", "requirements/REQ-test-flow/03-design.md")
+        self.record("test_plan", "requirements/REQ-test-flow/05-test-plan.md")
+        self.run_tool("advance")
+        evidence = self.write_artifact(
+            "requirements/REQ-test-flow/reviews/readiness-engineering-reject.md",
+            "# readiness_review engineering review\n\n"
+            "The frozen interface cannot be implemented safely.\n\n"
+            "## Verdict\n\nreject\n",
+        )
+        work_item_id, actor_ref = self.complete_role_work(
+            "engineering",
+            {"review:readiness_review:engineering": evidence},
+        )
+
+        missing = self.run_tool(
+            "decide",
+            "--gate",
+            "readiness_review",
+            "--role",
+            "engineering",
+            "--actor-ref",
+            actor_ref,
+            "--work-item-id",
+            work_item_id,
+            "--verdict",
+            "reject",
+            "--evidence",
+            str(evidence.relative_to(self.root)),
+            expected=2,
+        )
+        self.assertIn("requires at least one finding", missing.stderr)
+
+        decision_args = (
+            "decide",
+            "--gate",
+            "readiness_review",
+            "--role",
+            "engineering",
+            "--actor-ref",
+            actor_ref,
+            "--work-item-id",
+            work_item_id,
+            "--verdict",
+            "reject",
+            "--evidence",
+            str(evidence.relative_to(self.root)),
+            "--finding",
+            "blocker:engineering:Implementation cannot satisfy the frozen interface.",
+        )
+        self.run_tool(*decision_args)
+        recorded = json.loads(self.run_tool("status", "--json").stdout)
+        revision = recorded["revision"]
+        self.assertEqual(1, len(recorded["issues"]))
+        issue = recorded["issues"][0]
+        self.assertEqual("blocker", issue["severity"])
+        self.assertEqual("engineering", issue["owner"])
+        self.assertEqual("readiness_review", issue["review_gate"])
+        self.assertTrue(issue["stable_key"].startswith("review-finding:"))
+
+        replay = self.run_tool(*decision_args)
+        self.assertIn("already recorded", replay.stdout)
+        replayed = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual(revision, replayed["revision"])
+        self.assertEqual(1, len(replayed["issues"]))
+
+    def test_design_artifact_bundle_rewinds_once_and_preserves_complete_baseline(self) -> None:
+        self.init("strict")
+        self.complete_discovery()
+        self.record(
+            "prd",
+            "requirements/REQ-test-flow/01-prd.md",
+            text=(
+                "# Product requirements\n\n"
+                "## User outcome\n\nDeliver the confirmed workflow behavior.\n\n"
+                "## Acceptance criteria\n\nAC-001: The complete user journey works.\n\n"
+                "## Exclusions\n\nNo core outcome may be replaced by a mock.\n"
+            ),
+        )
+        self.run_tool(
+            "register-acceptance-criteria",
+            "--criterion",
+            "AC-001=The complete user journey works.",
+        )
+        self.run_tool("advance")
+        self.approve("prd_review", ("product", "engineering", "testing"))
+        self.run_tool("advance")
+
+        self.record("technical_design", "requirements/REQ-test-flow/03-design.md")
+        self.record(
+            "database_design",
+            "requirements/REQ-test-flow/04-database.md",
+            "not_applicable",
+            "No persistence changes are needed.",
+        )
+        self.record("test_plan", "requirements/REQ-test-flow/05-test-plan.md")
+        self.record("test_cases", "requirements/REQ-test-flow/05-test-cases.md")
+        self.record("release_plan", "requirements/REQ-test-flow/06-release-plan.md")
+        self.run_tool("advance")
+        self.approve("readiness_review", ("product", "engineering", "testing"))
+
+        self.run_tool("reopen", "--stage", "design", "--reason", "Replace design baseline")
+
+        bundle_items = []
+        artifact_paths: dict[str, Path] = {}
+        for name, filename, status, notes in (
+            ("technical_design", "03-design-v2.md", "ready", ""),
+            (
+                "database_design",
+                "04-database-v2.md",
+                "not_applicable",
+                "The revised design still has no persistence changes.",
+            ),
+            ("test_plan", "05-test-plan-v2.md", "ready", ""),
+            ("test_cases", "05-test-cases-v2.md", "ready", ""),
+            ("release_plan", "06-release-plan-v2.md", "ready", ""),
+        ):
+            artifact = self.write_artifact(f"requirements/REQ-test-flow/{filename}")
+            artifact_paths[name] = artifact
+            bundle_items.append(
+                {
+                    "name": name,
+                    "path": str(artifact.relative_to(self.root)),
+                    "status": status,
+                    "notes": notes,
+                }
+            )
+        engineering_work, _ = self.complete_role_work(
+            "engineering",
+            {
+                name: artifact_paths[name]
+                for name in ("technical_design", "database_design", "release_plan")
+            },
+        )
+        testing_work, _ = self.complete_role_work(
+            "testing",
+            {
+                name: artifact_paths[name]
+                for name in ("test_plan", "test_cases")
+            },
+        )
+        for item in bundle_items:
+            item["work_item_id"] = (
+                testing_work
+                if item["name"] in {"test_plan", "test_cases"}
+                else engineering_work
+            )
+        manifest = self.root / "docs" / "requirements" / "REQ-test-flow" / "design-v2.json"
+        manifest.write_text(json.dumps({"artifacts": bundle_items}), encoding="utf-8")
+
+        result = self.run_tool(
+            "record-artifact-bundle",
+            "--manifest",
+            str(manifest.relative_to(self.root)),
+        )
+
+        self.assertIn("Recorded artifact bundle", result.stdout)
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual("design", state["workflow"]["current_stage"])
+        self.assertNotIn("readiness_review", state["decisions"])
+        self.assertEqual("not_applicable", state["artifacts"]["database_design"]["status"])
+        for item in bundle_items:
+            self.assertEqual(item["path"], state["artifacts"][item["name"]]["path"])
+            self.assertIn(
+                state["artifacts"][item["name"]]["status"],
+                {"ready", "not_applicable"},
+            )
+        change_events = [
+            event
+            for event in state["history"]
+            if event["event"] == "reopened"
+            and "readiness_review->design" in event["detail"]
+        ]
+        self.assertEqual(1, len(change_events))
 
     def test_major_issue_requires_resolution_or_explicit_disposition_at_acceptance(self) -> None:
         self.init("quick")
@@ -2478,6 +3107,23 @@ class WorkflowToolTests(unittest.TestCase):
                 env=env,
             )
             self.assertIn("Another workflow update is in progress", rejected.stderr)
+
+    def test_invalid_lock_timeout_is_reported_without_traceback(self) -> None:
+        env = dict(os.environ)
+        env["SDLC_LOCK_TIMEOUT"] = "invalid"
+        rejected = self.run_tool(
+            "init",
+            "--id",
+            "REQ-invalid-lock-timeout",
+            "--title",
+            "Invalid lock timeout",
+            "--request",
+            "The invalid environment setting should produce a controlled error.",
+            expected=2,
+            env=env,
+        )
+        self.assertIn("non-negative finite number", rejected.stderr)
+        self.assertNotIn("Traceback", rejected.stderr)
 
 
 if __name__ == "__main__":

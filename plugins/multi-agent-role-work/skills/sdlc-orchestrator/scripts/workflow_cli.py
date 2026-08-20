@@ -12,6 +12,15 @@ MUTATING_COMMANDS = frozenset(
         "start",
         "pause",
         "resume",
+        "activate",
+        "deactivate",
+        "abandon",
+        "begin-work",
+        "heartbeat-work",
+        "complete-work",
+        "cancel-work",
+        "fail-work",
+        "timeout-work",
         "repair-state",
         "assess-risk",
         "report-risk",
@@ -20,6 +29,7 @@ MUTATING_COMMANDS = frozenset(
         "accept-escalation-risk",
         "escalate-mode",
         "record-artifact",
+        "record-artifact-bundle",
         "record-core-goals",
         "register-acceptance-criteria",
         "approve-scope-change",
@@ -56,6 +66,20 @@ def build_parser(api: Any) -> argparse.ArgumentParser:
     parser.add_argument("--id", help="Workflow ID; defaults to the active workflow")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    version = subparsers.add_parser("version", help="Print the loaded workflow plugin identity")
+    version.add_argument("--runtime-root", default=str(api.default_plugin_root()))
+    version.add_argument("--json", action="store_true")
+    version.set_defaults(func=cmd_version)
+
+    doctor = subparsers.add_parser(
+        "doctor", help="Compare editable source, installed runtime, and loaded plugin identities"
+    )
+    doctor.add_argument("--runtime-root", default=str(api.default_plugin_root()))
+    doctor.add_argument("--source-root")
+    doctor.add_argument("--entry", default="skills/sdlc-orchestrator/scripts/workflow.py")
+    doctor.add_argument("--json", action="store_true")
+    doctor.set_defaults(func=cmd_doctor)
+
     init = subparsers.add_parser("init", help="Initialize and activate a workflow")
     init.add_argument(
         "--id",
@@ -71,7 +95,11 @@ def build_parser(api: Any) -> argparse.ArgumentParser:
         choices=GATES,
         help="Require a separately evidenced human approval at this gate; repeat as needed",
     )
-    init.add_argument("--force", action="store_true")
+    init.add_argument(
+        "--force",
+        action="store_true",
+        help="Deprecated and fail-closed; use deactivate/abandon plus a new ID",
+    )
     init.set_defaults(func=cmd_init)
 
     start = subparsers.add_parser(
@@ -91,7 +119,11 @@ def build_parser(api: Any) -> argparse.ArgumentParser:
         choices=GATES,
         help="Require a separately evidenced human approval at this gate; repeat as needed",
     )
-    start.add_argument("--force", action="store_true")
+    start.add_argument(
+        "--force",
+        action="store_true",
+        help="Deprecated and fail-closed; use deactivate/abandon plus a new ID",
+    )
     start.set_defaults(func=cmd_start)
 
     status = subparsers.add_parser("status", help="Show workflow status")
@@ -117,6 +149,10 @@ def build_parser(api: Any) -> argparse.ArgumentParser:
     overview.add_argument("--json", action="store_true")
     overview.set_defaults(func=cmd_overview)
 
+    list_cmd = subparsers.add_parser("list", help="List persisted workflows and pointer ownership")
+    list_cmd.add_argument("--json", action="store_true")
+    list_cmd.set_defaults(func=cmd_list)
+
     pause = subparsers.add_parser(
         "pause", help="Pause workflow routing without discarding state or evidence"
     )
@@ -126,8 +162,96 @@ def build_parser(api: Any) -> argparse.ArgumentParser:
     resume = subparsers.add_parser("resume", help="Resume a paused workflow at the same stage")
     resume.set_defaults(func=cmd_resume)
 
+    activate = subparsers.add_parser("activate", help="Activate an inactive workflow by explicit ID")
+    activate.set_defaults(func=cmd_activate)
+
+    deactivate = subparsers.add_parser(
+        "deactivate", help="Release routing ownership while preserving resumable evidence"
+    )
+    deactivate.add_argument("--reason", required=True)
+    deactivate.set_defaults(func=cmd_deactivate)
+
+    abandon = subparsers.add_parser(
+        "abandon", help="Terminate a workflow without treating it as delivered"
+    )
+    abandon.add_argument("--reason", required=True)
+    abandon.set_defaults(func=cmd_abandon)
+
     next_cmd = subparsers.add_parser("next", help="Show the next required evidence or transition")
     next_cmd.set_defaults(func=cmd_next)
+
+    begin_work = subparsers.add_parser(
+        "begin-work",
+        help="Dispatch one role attempt against the current immutable input baseline",
+    )
+    begin_work.add_argument("--work-item-id", required=True)
+    begin_work.add_argument("--role", choices=ROLES, required=True)
+    begin_work.add_argument(
+        "--actor-ref",
+        required=True,
+        help="Stable task/agent reference responsible for this attempt",
+    )
+    begin_work.add_argument(
+        "--deadline-at",
+        required=True,
+        help="Hard ISO-8601 deadline with timezone",
+    )
+    begin_work.add_argument(
+        "--lease-seconds",
+        type=int,
+        default=900,
+        help="Renewable heartbeat lease in seconds (default: 900)",
+    )
+    begin_work.add_argument(
+        "--override-evidence",
+        help="Repository evidence authorizing a handoff beyond the stage budget",
+    )
+    begin_work.set_defaults(func=cmd_begin_work)
+
+    heartbeat_work = subparsers.add_parser(
+        "heartbeat-work", help="Renew an active role attempt lease"
+    )
+    heartbeat_work.add_argument("--work-item-id", required=True)
+    heartbeat_work.add_argument(
+        "--lease-seconds",
+        type=int,
+        help="Optional new lease duration in seconds",
+    )
+    heartbeat_work.set_defaults(func=cmd_heartbeat_work)
+
+    complete_work = subparsers.add_parser(
+        "complete-work",
+        help="Complete a role attempt with content-addressed repository outputs",
+    )
+    complete_work.add_argument("--work-item-id", required=True)
+    complete_work.add_argument(
+        "--output",
+        action="append",
+        required=True,
+        help="NAME=repository/path; repeat for multiple outputs",
+    )
+    complete_work.set_defaults(func=cmd_complete_work)
+
+    cancel_work = subparsers.add_parser(
+        "cancel-work", help="Cancel an active role attempt"
+    )
+    cancel_work.add_argument("--work-item-id", required=True)
+    cancel_work.add_argument("--reason", required=True)
+    cancel_work.set_defaults(func=cmd_cancel_work)
+
+    fail_work = subparsers.add_parser(
+        "fail-work", help="Record an active role attempt as failed"
+    )
+    fail_work.add_argument("--work-item-id", required=True)
+    fail_work.add_argument("--reason", required=True)
+    fail_work.set_defaults(func=cmd_fail_work)
+
+    timeout_work = subparsers.add_parser(
+        "timeout-work", help="Record an expired role attempt as timed out"
+    )
+    timeout_work.add_argument("--work-item-id", required=True)
+    timeout_work.add_argument("--reason", required=True)
+    timeout_work.set_defaults(func=cmd_timeout_work)
 
     risk = subparsers.add_parser(
         "assess-risk",
@@ -173,6 +297,21 @@ def build_parser(api: Any) -> argparse.ArgumentParser:
     report_risk.add_argument("--risk", action="append", choices=RISK_FLAGS, required=True)
     report_risk.add_argument("--summary", required=True)
     report_risk.add_argument("--evidence", required=True)
+    report_risk.add_argument(
+        "--scope-kind",
+        choices=("workflow", "stage", "capability"),
+        default="workflow",
+        help="Isolate optional external capabilities from the core product workflow.",
+    )
+    report_risk.add_argument(
+        "--affected-scope",
+        action="append",
+        help="Stable affected stage/path/capability identifier; repeat as needed.",
+    )
+    report_risk.add_argument(
+        "--origin-work-item",
+        help="Optional work-item ID that discovered this risk.",
+    )
     report_risk.set_defaults(func=cmd_report_risk)
 
     resolve_risk = subparsers.add_parser(
@@ -231,6 +370,10 @@ def build_parser(api: Any) -> argparse.ArgumentParser:
     artifact = subparsers.add_parser("record-artifact", help="Record an existing repository artifact")
     artifact.add_argument("--name", choices=ARTIFACTS, required=True)
     artifact.add_argument("--path", required=True)
+    artifact.add_argument(
+        "--work-item-id",
+        help="Completed role work item that produced this artifact when role-owned.",
+    )
     artifact.add_argument("--status", choices=("ready", "not_applicable", "superseded"), default="ready")
     artifact.add_argument("--notes")
     artifact.add_argument(
@@ -247,7 +390,23 @@ def build_parser(api: Any) -> argparse.ArgumentParser:
         default=300,
         help="Per-command timeout in seconds for verification execution",
     )
+    artifact.add_argument(
+        "--output-path",
+        action="append",
+        help="Explicit generated-output directory allowed to change in isolated verification.",
+    )
     artifact.set_defaults(func=cmd_record_artifact)
+
+    artifact_bundle = subparsers.add_parser(
+        "record-artifact-bundle",
+        help="Atomically record multiple artifacts from one design baseline",
+    )
+    artifact_bundle.add_argument(
+        "--manifest",
+        required=True,
+        help="Repository YAML or JSON manifest containing an artifacts list",
+    )
+    artifact_bundle.set_defaults(func=cmd_record_artifact_bundle)
 
     goals = subparsers.add_parser(
         "record-core-goals",
@@ -310,6 +469,11 @@ def build_parser(api: Any) -> argparse.ArgumentParser:
         action="append",
         help="Tracked generated/vendor path to exclude from the binding; repeat as needed.",
     )
+    source_revision.add_argument(
+        "--output-path",
+        action="append",
+        help="Explicit generated-output directory allowed to change; repeat as needed.",
+    )
     source_revision.set_defaults(func=cmd_record_source_revision)
 
     criterion_verdict = subparsers.add_parser(
@@ -322,6 +486,11 @@ def build_parser(api: Any) -> argparse.ArgumentParser:
     )
     criterion_verdict.add_argument("--scope-change-id")
     criterion_verdict.add_argument("--evidence", required=True)
+    criterion_verdict.add_argument(
+        "--work-item-id",
+        required=True,
+        help="Completed testing work item with output criterion_verdict:<criterion-id>",
+    )
     criterion_verdict.set_defaults(func=cmd_record_criterion_verdict)
 
     journey = subparsers.add_parser(
@@ -336,6 +505,11 @@ def build_parser(api: Any) -> argparse.ArgumentParser:
         help="check_name=pass|fail|blocked|not_applicable",
     )
     journey.add_argument("--evidence", required=True)
+    journey.add_argument(
+        "--work-item-id",
+        required=True,
+        help="Completed testing work item with exact journey_report output",
+    )
     journey.set_defaults(func=cmd_record_user_journey)
 
     outcome = subparsers.add_parser(
@@ -348,6 +522,11 @@ def build_parser(api: Any) -> argparse.ArgumentParser:
     )
     outcome.add_argument("--scope-change-id")
     outcome.add_argument("--evidence", required=True)
+    outcome.add_argument(
+        "--work-item-id",
+        required=True,
+        help="Completed testing work item with output core_outcome:<goal-id>",
+    )
     outcome.set_defaults(func=cmd_record_core_outcome)
 
     feedback = subparsers.add_parser(
@@ -408,9 +587,19 @@ def build_parser(api: Any) -> argparse.ArgumentParser:
         required=True,
         help="Stable subagent task/session reference; provides traceability, not authentication.",
     )
+    decide.add_argument(
+        "--work-item-id",
+        required=True,
+        help="Completed independent review work item for this role and gate.",
+    )
     decide.add_argument("--verdict", choices=("approve", "reject"), required=True)
     decide.add_argument("--evidence", required=True, help="Unique repository review record for this role and gate")
     decide.add_argument("--notes")
+    decide.add_argument(
+        "--finding",
+        action="append",
+        help="Structured finding as severity:owner:summary; required for reject.",
+    )
     decide.set_defaults(func=cmd_decide)
 
     gate_review = subparsers.add_parser(

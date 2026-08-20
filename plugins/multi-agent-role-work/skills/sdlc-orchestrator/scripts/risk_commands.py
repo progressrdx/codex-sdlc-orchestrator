@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from command_runtime import invoke as invoke_bound
+from risk_policy import RISK_SCOPE_KINDS, risk_scope_key
 
 
 def invoke(name: str, api: Any, args: Any) -> Any:
@@ -39,6 +41,7 @@ def cmd_assess_risk(args: argparse.Namespace) -> None:
         str(flag)
         for report in state.get("risk_reports", [])
         if report.get("status") not in CLOSED_RISK_STATUSES
+        and report.get("scope_kind", "workflow") != "capability"
         for flag in report.get("flags", [])
     ]
     flags = list(dict.fromkeys(list(args.risk or []) + reported_flags))
@@ -155,6 +158,23 @@ def next_risk_report_id(state: dict[str, Any]) -> str:
     return f"RSK-{max(numbers, default=0) + 1:03d}"
 
 
+def risk_identity(report: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the immutable identity of a persisted risk report."""
+    return {
+        "flags": sorted(
+            {
+                str(flag)
+                for flag in report.get("flags", [])
+                if str(flag) in RISK_FLAGS
+            }
+        ),
+        "scope_kind": str(report.get("scope_kind", "workflow")),
+        "affected_scope": str(report.get("affected_scope", "workflow")),
+        "origin_work_item": str(report.get("origin_work_item", "coordinator")),
+        "baseline_hash": str(report.get("baseline_hash", "")),
+    }
+
+
 def cmd_report_risk(args: argparse.Namespace) -> None:
     root = repository_root(args.root)
     path, state = load_state(root, args.id)
@@ -169,7 +189,88 @@ def cmd_report_risk(args: argparse.Namespace) -> None:
     )
     require_markdown_structure(evidence_path)
     evidence_hash = content_sha256(evidence_path)
+    scope_kind = str(getattr(args, "scope_kind", "workflow")).strip()
+    if scope_kind not in RISK_SCOPE_KINDS:
+        raise WorkflowError(f"Unknown risk scope kind: {scope_kind!r}")
+    affected_values = [
+        str(value).strip()
+        for value in (getattr(args, "affected_scope", None) or [])
+        if str(value).strip()
+    ]
+    affected_scope = ",".join(sorted(set(affected_values))) or "workflow"
+    origin_work_item = str(getattr(args, "origin_work_item", "") or "coordinator").strip()
+    if origin_work_item != "coordinator" and origin_work_item not in state.get("work_items", {}):
+        raise WorkflowError(f"Risk references unknown work item: {origin_work_item}")
+    if origin_work_item != "coordinator":
+        origin = state["work_items"][origin_work_item]
+        if args.source in {"product", "engineering", "testing"} and origin.get("role") != args.source:
+            raise WorkflowError(
+                f"Risk source {args.source} does not match work item role {origin.get('role')}."
+            )
+    baseline_hash = str(
+        state.get("risk_assessment", {}).get("evidence_sha256")
+        or state.get("artifacts", {}).get("original_request", {}).get("evidence_sha256")
+        or ""
+    )
+    stable_key = risk_scope_key(
+        flags,
+        scope_kind=scope_kind,
+        affected_scope=affected_scope,
+        baseline_hash=baseline_hash,
+        origin_work_item=origin_work_item,
+    )
     for report in state.get("risk_reports", []):
+        identity = risk_identity(report)
+        try:
+            derived_key = risk_scope_key(**identity)
+        except ValueError as exc:
+            raise WorkflowError(
+                f"Risk {report.get('id')} has an invalid persisted scope identity."
+            ) from exc
+        if report.get("risk_key") == stable_key or derived_key == stable_key:
+            requested_identity = {
+                "flags": sorted(set(flags)),
+                "scope_kind": scope_kind,
+                "affected_scope": affected_scope,
+                "origin_work_item": origin_work_item,
+                "baseline_hash": baseline_hash,
+            }
+            if identity != requested_identity:
+                raise WorkflowError(
+                    f"Risk {report.get('id')} scope identity is immutable; create a separate "
+                    "risk without closing or weakening the original report."
+                )
+            if report.get("evidence_sha256") == evidence_hash:
+                print(f"Risk already recorded: {report.get('id')}")
+                return
+            if report.get("status") in CLOSED_RISK_STATUSES:
+                raise WorkflowError(
+                    f"Risk {report.get('id')} is closed for this baseline; use a new baseline or scope."
+                )
+            report.update(
+                {
+                    "source": args.source,
+                    "summary": args.summary.strip(),
+                    "flags": flags,
+                    "scope_kind": scope_kind,
+                    "affected_scope": affected_scope,
+                    "origin_work_item": origin_work_item,
+                    "evidence": str(relative),
+                    "evidence_sha256": evidence_hash,
+                    "risk_key": stable_key,
+                    "updated_at": now(),
+                }
+            )
+            add_history(state, "risk_updated", f"{report.get('id')}:{stable_key}")
+            refresh_escalation(
+                state,
+                summary=args.summary.strip(),
+                detected_by=args.source,
+                timestamp=now,
+            )
+            save_state(path, state)
+            print(f"Updated risk {report.get('id')}: {relative}")
+            return
         if report.get("evidence_sha256") == evidence_hash:
             raise WorkflowError(f"Risk evidence is already used by {report.get('id')}.")
 
@@ -179,9 +280,16 @@ def cmd_report_risk(args: argparse.Namespace) -> None:
         "source": args.source,
         "summary": args.summary.strip(),
         "flags": flags,
+        "risk_key": stable_key,
+        "scope_kind": scope_kind,
+        "affected_scope": affected_scope,
+        "origin_work_item": origin_work_item,
+        "baseline_hash": baseline_hash,
         "status": "recorded",
         "recommended_mode": recommended_mode_for(
-            list(dict.fromkeys(combined_risk_flags(state) + flags))
+            flags
+            if scope_kind == "capability"
+            else list(dict.fromkeys(combined_risk_flags(state) + flags))
         ),
         "evidence": str(relative),
         "evidence_sha256": evidence_hash,
@@ -211,7 +319,13 @@ def cmd_report_risk(args: argparse.Namespace) -> None:
         )
         print("Workflow advancement is blocked until explicit user approval is recorded.")
     else:
-        print(f"Current mode {workflow['mode']} remains sufficient.")
+        if scope_kind == "capability":
+            print(
+                "Capability risk is isolated from the product workflow; authorize and verify "
+                f"the {affected_scope} capability separately before execution."
+            )
+        else:
+            print(f"Current mode {workflow['mode']} remains sufficient.")
 
 
 def risk_report_by_id(state: dict[str, Any], report_id: str) -> dict[str, Any]:
@@ -333,7 +447,8 @@ def cmd_accept_escalation_risk(args: argparse.Namespace) -> None:
     root = repository_root(args.root)
     path, state = load_state(root, args.id)
     escalation = state.get("escalation", {})
-    if escalation.get("status") != "required":
+    renewing_expired_acceptance = escalation_acceptance_expired(escalation)
+    if escalation.get("status") != "required" and not renewing_expired_acceptance:
         raise WorkflowError("No mode escalation is currently required.")
     flags = set(escalation.get("flags", []))
     forbidden = sorted(flags & NON_WAIVABLE_ESCALATION_FLAGS)
@@ -342,6 +457,12 @@ def cmd_accept_escalation_risk(args: argparse.Namespace) -> None:
             "These escalation risks cannot be accepted without upgrading mode: "
             + ",".join(forbidden)
         )
+    try:
+        expiry = date.fromisoformat(args.expires_on)
+    except ValueError as exc:
+        raise WorkflowError("Expiry date must be a valid YYYY-MM-DD date.") from exc
+    if expiry < date.today():
+        raise WorkflowError("Expiry date must not be in the past.")
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", args.expires_on):
         raise WorkflowError("Expiry date must use YYYY-MM-DD.")
     evidence_path, relative = repository_evidence_path(
@@ -359,6 +480,7 @@ def cmd_accept_escalation_risk(args: argparse.Namespace) -> None:
         for report_id in escalation.get("report_ids", [])
         if report_id in reports_by_id
     }
+    reserved_hashes.add(escalation.get("acceptance_evidence_sha256"))
     if evidence_hash in reserved_hashes:
         raise WorkflowError("Escalation risk acceptance requires distinct evidence.")
     for report_id in escalation.get("report_ids", []):
@@ -403,7 +525,7 @@ def cmd_escalate_mode(args: argparse.Namespace) -> None:
     root = repository_root(args.root)
     path, state = load_state(root, args.id)
     escalation = state.get("escalation", {})
-    if escalation.get("status") != "required":
+    if escalation.get("status") != "required" and not escalation_acceptance_expired(escalation):
         raise WorkflowError("No mode escalation is currently required.")
     workflow = state["workflow"]
     target = args.to_mode
@@ -434,7 +556,9 @@ def cmd_escalate_mode(args: argparse.Namespace) -> None:
     }:
         raise WorkflowError("Escalation approval requires distinct evidence.")
 
-    flags = combined_risk_flags(state)
+    flags = list(
+        dict.fromkeys(combined_risk_flags(state) + list(escalation.get("flags", [])))
+    )
     previous_policy = state.get("risk_assessment", {}).get("gate_policy", {})
     policy = {
         "clarification": bool(previous_policy.get("clarification")),

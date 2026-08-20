@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+from datetime import date
 from typing import Any, Callable
 
 
@@ -58,6 +61,49 @@ NON_WAIVABLE_ESCALATION_FLAGS = {
     "production_release",
 }
 CLOSED_RISK_STATUSES = {"resolved", "withdrawn", "accepted_risk"}
+RISK_SCOPE_KINDS = ("workflow", "stage", "capability")
+
+
+def risk_scope_key(
+    flags: list[str],
+    *,
+    scope_kind: str = "workflow",
+    affected_scope: str,
+    baseline_hash: str,
+    origin_work_item: str,
+) -> str:
+    """Return a stable identity for one risk against one reviewed baseline."""
+    normalized_scope_kind = scope_kind.strip()
+    if normalized_scope_kind not in RISK_SCOPE_KINDS:
+        raise ValueError(f"Unknown risk scope kind: {scope_kind!r}")
+    normalized_flags = sorted({str(flag) for flag in flags if flag in RISK_FLAGS})
+    payload = {
+        "scope_kind": normalized_scope_kind,
+        "affected_scope": affected_scope.strip(),
+        "baseline_hash": baseline_hash.strip(),
+        "flags": normalized_flags,
+        "origin_work_item": origin_work_item.strip(),
+    }
+    rendered = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return "risk:" + hashlib.sha256(rendered).hexdigest()
+
+
+def escalation_acceptance_expired(
+    escalation: dict[str, Any], current_date: date | None = None
+) -> bool:
+    """Return whether a recorded risk acceptance is no longer in force."""
+    if escalation.get("status") != "accepted_risk":
+        return False
+    try:
+        expiry = date.fromisoformat(str(escalation.get("acceptance_expires_on", "")))
+    except ValueError:
+        return True
+    return expiry < (current_date or date.today())
 
 
 def recommended_mode_for(flags: list[str]) -> str:
@@ -79,10 +125,18 @@ def recommended_mode_for(flags: list[str]) -> str:
 
 
 def combined_risk_flags(state: dict[str, Any]) -> list[str]:
-    """Combine baseline flags with reports that still affect mode selection."""
+    """Combine risks that affect the product workflow's assurance mode.
+
+    Capability-scoped risks (for example a later paid-advertising or production
+    action) keep their own assurance boundary and must not force unrelated
+    product implementation through the strict workflow.
+    """
     flags = list(state.get("risk_assessment", {}).get("flags", []))
     for report in state.get("risk_reports", []):
-        if report.get("status") not in CLOSED_RISK_STATUSES:
+        if (
+            report.get("status") not in CLOSED_RISK_STATUSES
+            and report.get("scope_kind", "workflow") != "capability"
+        ):
             flags.extend(report.get("flags", []))
     return list(dict.fromkeys(str(flag) for flag in flags if flag in RISK_FLAGS))
 
@@ -102,6 +156,7 @@ def refresh_escalation(
         report
         for report in state.get("risk_reports", [])
         if report.get("status") not in CLOSED_RISK_STATUSES
+        and report.get("scope_kind", "workflow") != "capability"
     ]
     requires_escalation = MODE_RANK[recommended] > MODE_RANK[workflow["mode"]]
     if requires_escalation:
@@ -119,7 +174,21 @@ def refresh_escalation(
         }
         return True
     previous = state.get("escalation", {})
-    if previous.get("status") == "required":
+    previous_report_ids = {
+        str(report_id) for report_id in previous.get("report_ids", [])
+    }
+    accepted_report_ids = {
+        str(report.get("id"))
+        for report in state.get("risk_reports", [])
+        if report.get("status") == "accepted_risk"
+        and (
+            not previous_report_ids
+            or str(report.get("id")) in previous_report_ids
+        )
+    }
+    if previous.get("status") == "accepted_risk" and accepted_report_ids:
+        return False
+    if previous.get("status") in {"required", "accepted_risk"}:
         state["escalation"] = {
             **previous,
             "status": "cleared",

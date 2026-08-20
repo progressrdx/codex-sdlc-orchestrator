@@ -1,6 +1,6 @@
 ---
 name: sdlc-orchestrator
-description: "Use for explicit formal multi-role delivery: 团队开发：功能请求, $sdlc-orchestrator, or an active workflow’s clear 继续团队开发, 查看研发进度, 修改当前需求, or 开始验收 request. Read state first, then coordinate product, engineering, and testing gates. Do not use for ordinary questions, isolated fixes, or ambiguous 继续 without an active workflow."
+description: "Use for explicit formal multi-role delivery: 团队开发：功能请求, $sdlc-orchestrator, 继续团队开发, 查看研发进度, 修改当前需求, or 开始验收. Read state first, then coordinate product, engineering, and testing gates. Do not use for ordinary questions, isolated fixes, or a bare ambiguous 继续."
 ---
 
 # Coordinate the SDLC workflow
@@ -14,7 +14,7 @@ Keep the main thread focused on business decisions, state transitions, and synth
 3. Treat an actionable `团队开发：<request>` prefix as an explicit formal-process request. Pass `<request>` to `start --request` without asking the user to repeat it. Equivalent explicit phrases such as “启动正式研发流程” or “使用多角色流程开发” also qualify. A discussion such as “团队开发和个人开发有什么区别” does not.
 4. If no workflow exists and the user explicitly requested the formal process, initialize it with `start --request ... --mode auto` unless the user explicitly chose a mode. Add `--title ...` only when the user gives a better short title. Add `--require-human-approval <gate>` for each configured human checkpoint.
 5. Treat an explicitly requested mode as a minimum floor. Natural-language requests without a mode always start in `auto`; determine the lowest safe concrete mode during scope analysis.
-6. When an active workflow exists, route “继续团队开发”, “查看研发进度”, “修改当前需求”, and “开始验收” to it. A bare “继续” may inspect an active workflow but must not resume a paused one; without active state, it is ordinary conversation and never creates a workflow.
+6. Route only clear workflow phrases such as “继续团队开发”, “查看研发进度”, “修改当前需求”, and “开始验收”. A bare “继续” is ordinary conversation because, without a lifecycle hook, the Skill cannot reliably know the user's target before activation. Without active state, even a clear continuation phrase reports that no workflow exists and never creates one.
    If the user explicitly pauses the workflow, run `pause --reason ...`; paused state preserves evidence and rejects delivery mutations. Run `resume` only for an explicit formal-workflow continuation such as “继续团队开发”.
 7. On every routed workflow turn, run `overview` before assigning work or writing files. Do not infer the current stage from the conversation, a prior summary, or the user's wording. The plugin installs no lifecycle hooks; ordinary conversation must remain unaffected.
 8. Treat `start` as opening scope and risk analysis, not permission to build. Advance from intake to `scope_check`, read [scope-risk-template.md](assets/scope-risk-template.md), and inspect the request and repository before asking questions or selecting a mode.
@@ -27,8 +27,9 @@ If any role discovers a new risk, preserve a substantive risk record and call `r
 Require a human checkpoint for destructive data changes, permission changes, production release authorization, security exceptions, legal/compliance decisions, or another irreversible/high-impact action. Use `readiness_review` when authorization is needed before implementation and `acceptance` when authorization is needed before final delivery. Tell the user which checkpoints were configured.
 
 Read [workflow-contract.md](references/workflow-contract.md) before the first state transition in a workflow.
-Use [meeting-notes-template.md](assets/meeting-notes-template.md) for every cross-role communication summary.
+Use [meeting-notes-template.md](assets/meeting-notes-template.md) only when a material cross-role decision, disagreement, defect triage, scope change, or ownership handoff is not already captured by an atomic gate bundle. Do not create minutes for routine status updates or passing checks.
 Use [gate-review-bundle-template.yaml](assets/gate-review-bundle-template.yaml) for PRD, readiness, and acceptance gate reviews.
+Use [design-artifact-bundle-template.yaml](assets/design-artifact-bundle-template.yaml) when design outputs share one baseline.
 In strict mode, use [core-goals-template.md](assets/core-goals-template.md) at requirement confirmation, [final-user-journey-template.md](assets/final-user-journey-template.md) during verification, and [verification-bundle-template.yaml](assets/verification-bundle-template.yaml) to submit the source binding, all criterion verdicts, and the journey result atomically.
 
 ## Route by stage
@@ -50,17 +51,20 @@ In strict mode, use [core-goals-template.md](assets/core-goals-template.md) at r
 | `acceptance` | Spawn all required role tasks with `$sdlc-review`; product checks each confirmed core outcome, tester checks current-source journey evidence, developer answers technical findings, and the coordinator submits one gate-review bundle. |
 | `delivery_confirmation` | In every mode, show the user the working result, implementation summary, and test evidence. Only unambiguous explicit approval completes delivery. Record criticism, defects, mismatch, negative examples, or requested changes with `record-delivery-confirmation --verdict request_changes` before any product edit, selecting the earliest affected stage. |
 
-Use a role-named subagent task and include the role boundary plus the explicit bundled `$sdlc-*` Skill in its prompt. Project custom agents may be used when available, but the workflow must never depend on them. Never omit the Skill and rely on the task name alone.
+Use a role-named subagent task and include the role boundary plus the explicit bundled `$sdlc-*` Skill in its prompt. Before naming an optional external Skill, confirm that its exact name appears in the current runtime's available Skill list. Use Product Design only when the user explicitly requests it or the assigned work is primarily visual exploration, screenshot-grounded UX audit, faithful source cloning, or implementation of a selected visual target; ordinary frontend implementation does not qualify by itself. `$frontend-design`, `$ui-ux-pro-max`, and `$web-design-guidelines` may augment relevant frontend work when available. Missing optional Skills never block the formal workflow: continue with the bundled role Skill and disclose the reduced capability. Project custom agents and optional Skills may help, but the workflow must never depend on them. Never omit the bundled role Skill and rely on the task name alone.
 
 Apply the `overview` execution policy to control cost. Treat its role-handoff count as the default per-stage ceiling and its verification-command count as a tool-enforced limit; exceed the handoff ceiling only for newly evidenced risk or explicit user direction, and explain why. Pass role agents the current decision summary, affected criteria, changed paths, and evidence paths—not the full transcript or complete passing logs. Run deterministic smoke/focused tests before broad semantic review, stop on the first failure, and expand only when the selected mode or observed risk requires it.
+
+Before every role delegation, call `begin-work` with the exact role, canonical task reference, hard deadline, and renewable lease. Heartbeat long-running assignments, cancel or time out abandoned attempts, then call `complete-work` with every repository output before recording it. Role-owned artifacts, reviews, and strict verification are rejected unless their exact bytes come from a current completed work item. If the input baseline changes or the workflow rewinds, dispatch a new attempt; never accept a late result from the superseded attempt. The CLI enforces the per-stage handoff budget and requires repository evidence for any override.
 
 Only route stages present in the state's `flow_stages`. In `micro`, assign implementation to engineering and verification to an independent tester, then obtain lightweight user delivery confirmation; do not invent product work, prototype work, role gates, or meetings that the selected flow omits.
 
 ## Enforce gates
 
 - Record artifacts only after checking that the referenced path exists.
+- When two or more artifacts in one design baseline change together, use `record-artifact-bundle --manifest <repository-yaml-or-json>` instead of sequential `record-artifact` calls. Each role-owned item includes `work_item_id`. Replacement baselines require an explicit `reopen` first; the tool never accepts late output by silently rewinding after the fact.
 - Do not advance past `scope_check` without a current structured risk assessment and task baseline. Never treat a short request as proof that no gaps or risks exist.
-- When a role reports scope expansion, API/data impact, business ambiguity, weak verification, external dependency, systemic failure, security/privacy, migration, production, or irreversible risk, call `report-risk` before continuing. Never hide a discovered trigger inside an implementation summary.
+- When a role reports scope expansion, API/data impact, business ambiguity, weak verification, external dependency, systemic failure, security/privacy, migration, production, or irreversible risk, call `report-risk --origin-work-item ... --scope-kind ... --affected-scope ...` before continuing. Never hide a discovered trigger inside an implementation summary. Use `scope-kind capability` for an optional external action such as publishing or paid acquisition; it stays isolated from the core product flow and must be authorized and verified separately.
 - Treat `escalation_required` as a hard stop. Do not call `escalate-mode` until the user or named authority explicitly approves the displayed risk evidence and target mode. Never choose a target below the recommendation.
 - Close a risk only with separate disposition evidence. `resolve-risk` requires different resolver and verifier identities; `withdraw-risk` is limited to the original reporter or user. Never edit state statuses directly.
 - Treat `accept-escalation-risk` as a constrained exception, not normal completion: require a named human, rationale, expiry, separate evidence, and disclose reduced assurance. Never use it for security/privacy, irreversible, migration, or production-release risk.
@@ -73,17 +77,18 @@ Only route stages present in the state's `flow_stages`. In `micro`, assign imple
 - No mode completes on AI review alone. Show the verified result and evidence to the user and require `record-delivery-confirmation --verdict approve`; requested changes rewind to implementation by default.
 - At `user_feedback` and `delivery_confirmation`, classify the user's intent before acting. A complaint or example of process/product failure is not permission to silently polish the sample. If it is ambiguous whether the user wants the delivered product changed or is diagnosing the workflow/plugin itself, ask one focused question and do not edit either product.
 - If the user rejects the preview, preserve the feedback and reopen to the earliest affected stage instead of continuing toward final verification.
-- Convert every blocking finding into a tracked issue; resolve it only with owner-matched evidence.
+- Put every review finding in the gate manifest as structured severity, owner, and summary. A reject requires at least one finding; approve cannot retain blocker/major findings. The tool upserts these findings into the issue ledger with stable keys, so prose cannot silently bypass issue tracking.
 - At acceptance, an open `major` issue also blocks delivery. Resolve it, or record an evidenced `accepted_risk` or `deferred` disposition with the named human authority; deferred issues require a due date.
-- After every exchange involving two or more roles, create concise meeting notes that preserve each role's key position, disagreements, decisions, owners, and follow-up actions. Do not store a raw transcript.
+- Preserve a concise meeting record only for a material cross-role decision, disagreement, defect triage, scope change, or ownership handoff. The inline gate bundle is the meeting record for gate reviews; do not author a redundant fourth file or store a raw transcript.
 - Record every role verdict with the canonical subagent task/session identifier as `--actor-ref`. The state tool rejects one reference reused by different roles at the same gate and binds the references into meeting and human-approval snapshots. This is traceability, not cryptographic authentication.
 - Record gate meetings only after collecting independent role verdicts. Prefer one `submit-gate-review` manifest containing exactly the required roles, distinct actor references/evidence, and the synthesized meeting record. Validation is atomic: an invalid role or meeting leaves the prior gate state unchanged.
-- When an indexed artifact changes, the state tool automatically rewinds to its earliest affected stage and supersedes downstream evidence. Treat the returned `change_control_required` event as a required cross-role change-control discussion before rebuilding downstream artifacts.
+- When an indexed upstream artifact must change, explicitly `reopen` the earliest affected stage before dispatching replacement work. Reopen supersedes downstream artifacts, reviews, and work items; a command at a later stage cannot silently install an earlier baseline.
 - Evidence is live: if an indexed artifact, review, meeting note, or human approval file changes after recording, its hash no longer matches and the gate cannot advance until it is recorded and reviewed again.
-- Verification is source-live and command-backed in every concrete mode. For micro, quick, and standard, record `verification_report` with `--test-command` and optionally `--build-command`; the state tool executes them in a disposable repository snapshot, streams a redacted/capped local log, and records only compact metadata/hashes in state. A nonzero or timed-out command stops immediately, terminates its process group, and cannot register the report. Relative product-file mutations remain isolated from the original workspace and are rejected inside the snapshot. Strict verification bundles execute their build and test commands before binding the committed scope. Any later product change blocks delivery until independent tests run again. Do not paste full passing logs into agent prompts; inspect the local log only for failures and never deliberately print secrets. This snapshot is not a host sandbox: reject commands with absolute-path, network, deployment, or credential side effects unless separately authorized.
+- Verification is source-live and command-backed in every concrete mode. Strict mode constructs one immutable delivery candidate from the exact commit/tree/path-mode-blob manifest and materializes tests only from those blobs; lightweight modes freeze a content-addressed workspace candidate. Ignored, untracked, hidden-index, escaping-symlink, submodule, path-collision, and candidate-mismatch gaps fail closed. Candidate inputs are kernel-enforced read-only with macOS Seatbelt or Linux bubblewrap; an unavailable backend fails closed. Source exclusions do not grant write permission, and only prevalidated `output_paths` may change; output links and special files are rejected. Any later candidate change blocks delivery. This is not a network, credential, process, or external-service sandbox, so reject those side effects unless separately authorized.
 - Select the final-journey profile that matches the deliverable (`web`, `desktop`, `api`, `cli`, `library`, or `data`). Record `fail`, `blocked`, or `not_applicable` truthfully; required non-pass results remain stored and block advancement instead of forcing a false all-pass report.
 - The final journey must test actual semantics and actions appropriate to the profile. A build, screenshot, source inspection, or prototype approval is insufficient.
-- Never edit `state.yaml` directly. Schema 10 state includes an integrity checksum and unsupported manual edits fail closed. Use `audit-state`; when a prior valid automatic backup exists, use the explicit `repair-state --from-backup --confirm RESTORE` recovery path.
+- Never edit `state.yaml` directly. Schema 11 state includes an integrity checksum and unsupported manual edits fail closed. Use `audit-state`; `repair-state --from-backup --confirm RESTORE` is allowed only when the current state is corrupt and the automatic backup, identity, live-owner, pointer, and provenance checks all pass. It cannot roll back any valid active or terminal state. Use `list`, `activate`, `deactivate`, or `abandon` for multi-workflow lifecycle; completed/abandoned workflows are immutable except for explicit backward `reopen`. Pointer loss recovers only a unique live owner and multiple live states fail closed.
+- Run `version` when identifying the executing plugin and `doctor --source-root <editable-plugin>` when source/cache behavior differs. `VERSION_COLLISION` and `RUNTIME_TAMPERED` are hard failures; reinstall and start a new task rather than guessing which payload ran.
 - Record design coordination as `design_sync`, implementation defects as `defect_triage`, requirement changes as `change_control`, and other cross-role discussions as `ad_hoc`.
 - Never infer `approve` from silence or from an artifact's existence.
 - Never let the implementer substitute for independent test approval.
@@ -101,6 +106,8 @@ Resolve `workflow.py` relative to this Skill and use `python3 <skill-dir>/script
 ```text
 workflow.py start --request "..." --mode standard --require-human-approval acceptance
 workflow.py start --request "..." --mode auto
+workflow.py begin-work --work-item-id engineering-design-001 --role engineering --actor-ref engineering-task-id --deadline-at <ISO-8601-deadline>
+workflow.py complete-work --work-item-id engineering-design-001 --output technical_design=docs/requirements/.../04-technical-design.md
 workflow.py init --title "..." --mode standard --request "..." --require-human-approval acceptance
 workflow.py overview
 workflow.py status
@@ -111,31 +118,33 @@ workflow.py resolve-risk --risk-id RSK-001 --resolved-by engineering --verified-
 workflow.py withdraw-risk --risk-id RSK-002 --withdrawn-by engineering --reason "..." --evidence docs/requirements/.../risks/RSK-002-withdrawal.md
 workflow.py accept-escalation-risk --approved-by "user" --reason "..." --expires-on 2026-12-31 --evidence docs/requirements/.../risks/RSK-002-acceptance.md
 workflow.py escalate-mode --to-mode standard --approved-by "user" --reason "..." --evidence docs/requirements/.../approvals/RSK-escalation.md
-workflow.py record-artifact --name clarification_questions --path docs/requirements/.../00-clarification.md
+workflow.py record-artifact --name clarification_questions --work-item-id product-clarification-001 --path docs/requirements/.../00-clarification.md
 workflow.py record-artifact --name requirement_confirmation --path docs/requirements/.../00-requirement-confirmation.md
 workflow.py record-core-goals --goal "GOAL-001=User can complete the real target journey" --evidence docs/requirements/.../00-core-goals.md
-workflow.py record-artifact --name prd --path docs/requirements/.../01-prd.md
+workflow.py record-artifact --name prd --work-item-id product-prd-001 --path docs/requirements/.../01-prd.md
 workflow.py register-acceptance-criteria --criterion "AC-001=Observable Must behavior"
 workflow.py approve-scope-change --item AC-001 --disposition deferred --approved-by "user-name" --reason "..." --impact-stage verification --impact-reason "Earlier design and implementation remain valid" --evidence docs/requirements/.../changes/SC-001.md
-workflow.py record-artifact --name prototype --path docs/requirements/.../07-prototype.md
+workflow.py record-artifact --name prototype --work-item-id engineering-prototype-001 --path docs/requirements/.../07-prototype.md
 workflow.py record-user-feedback --verdict approve --summary "..." --evidence docs/requirements/.../07-user-feedback.md
 workflow.py record-user-feedback --verdict request_changes --affected-stage design --summary "..." --evidence docs/requirements/.../07-user-feedback.md
 workflow.py submit-verification --manifest docs/requirements/.../08-verification-bundle.yaml
-workflow.py record-artifact --name verification_report --path docs/requirements/.../08-verification.md --build-command "..." --test-command "..."
-workflow.py record-source-revision --source-path src --source-path tests --build-command "..." --test-command "..." --evidence docs/requirements/.../08-source-verification.md
-workflow.py record-criterion-verdict --criterion-id AC-001 --verdict pass --evidence docs/requirements/.../tests/AC-001.md
-workflow.py record-user-journey --profile api --check launch=pass --check core_outcomes=pass --check content_semantics=pass --check interactions=pass --check external_links=blocked --check release_hygiene=pass --check source_truth=pass --evidence docs/requirements/.../08-final-journey.md
-workflow.py record-core-outcome --goal-id GOAL-001 --verdict satisfied --evidence docs/requirements/.../09-goal-outcomes.md
+workflow.py record-artifact --name verification_report --work-item-id testing-verification-001 --path docs/requirements/.../08-verification.md --build-command "..." --test-command "..." --output-path build
+workflow.py record-source-revision --source-path src --source-path tests --output-path build --build-command "..." --test-command "..." --evidence docs/requirements/.../08-source-verification.md
+workflow.py record-criterion-verdict --criterion-id AC-001 --work-item-id testing-verification-001 --verdict pass --evidence docs/requirements/.../tests/AC-001.md
+workflow.py record-user-journey --work-item-id testing-verification-001 --profile api --check launch=pass --check core_outcomes=pass --check content_semantics=pass --check interactions=pass --check external_links=blocked --check release_hygiene=pass --check source_truth=pass --evidence docs/requirements/.../08-final-journey.md
+workflow.py record-core-outcome --goal-id GOAL-001 --work-item-id testing-verification-001 --verdict satisfied --evidence docs/requirements/.../09-goal-outcomes.md
 workflow.py record-delivery-confirmation --verdict approve --summary "..." --evidence docs/requirements/.../09-delivery-confirmation.md
 workflow.py add-issue --source testing --severity blocker --summary "..."
 workflow.py resolve-issue --issue-id ISSUE-001 --resolved-by product --resolution "..." --evidence docs/requirements/.../01-prd.md
 workflow.py disposition-issue --issue-id ISSUE-002 --disposition accepted_risk --approved-by "release-owner" --rationale "..." --evidence docs/requirements/.../decisions/ISSUE-002.md
 workflow.py submit-gate-review --manifest docs/requirements/.../reviews/readiness-bundle.yaml
-workflow.py decide --gate prd_review --role testing --actor-ref tester-task-id --verdict approve --evidence docs/requirements/.../reviews/prd-testing.md
+workflow.py decide --gate prd_review --role testing --actor-ref tester-task-id --work-item-id testing-prd-review-001 --verdict approve --evidence docs/requirements/.../reviews/prd-testing.md
 workflow.py record-meeting --type prd_review --title "PRD review" --participants product,engineering,testing --outcome approved --path docs/requirements/.../meetings/MTG-001-prd-review.md
 workflow.py record-human-approval --gate acceptance --approved-by "release-owner" --evidence docs/requirements/.../approvals/acceptance.md
 workflow.py audit-state
 workflow.py repair-state --from-backup --confirm RESTORE
+workflow.py version --json
+workflow.py doctor --source-root /path/to/editable/plugin --json
 workflow.py pause --reason "User paused this requirement"
 workflow.py resume
 workflow.py advance

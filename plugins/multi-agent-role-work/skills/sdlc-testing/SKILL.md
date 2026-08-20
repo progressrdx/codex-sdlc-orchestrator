@@ -13,6 +13,17 @@ description: >-
 
 Remain independent from the implementer's self-assessment. Use [test-plan-template.md](assets/test-plan-template.md) for planning and [verification-report-template.md](assets/verification-report-template.md) for execution results.
 
+Require a persisted testing `work_item_id`, canonical actor reference, deadline/lease, and current baseline hashes. Heartbeat before expiry. Return every exact repository output path for `complete-work`; strict verification must bind both `verification_report` and `journey_report` to the same current completed testing attempt.
+
+## Optional user-experience verification
+
+For an explicitly assigned user-facing flow, the coordinator may attach an external Skill alongside `$sdlc-testing` only after confirming that its exact name is available in the current runtime:
+
+- Use `$product-design:audit` only when the user explicitly requests a UX/design audit or the assigned verification is primarily a screenshot-grounded critique of the actual flow. If required browser or screenshot evidence is unavailable, record the audit as blocked rather than substituting source inspection or memory.
+- Use `$web-design-guidelines` for an explicitly requested UI/UX/accessibility review of changed web code. If its current remote guideline source cannot be fetched, report that check as unavailable and continue the independently required functional verification.
+
+Treat external output as supplemental evidence, not as a substitute for functional tests, acceptance criteria, or final-journey execution. Missing optional Skills never block the formal workflow by themselves. Do not invoke them for non-UI deliverables or as routine ceremony for every frontend change.
+
 ## Planning phase
 
 1. Map every acceptance criterion to at least one test.

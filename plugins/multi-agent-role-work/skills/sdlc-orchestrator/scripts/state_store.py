@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import tempfile
 import time
@@ -101,14 +102,61 @@ def save_data(path: Path, data: dict[str, Any]) -> None:
     atomic_write_text(path, rendered)
 
 
+def claim_owned_data(
+    path: Path,
+    data: dict[str, Any],
+    *,
+    owner_key: str,
+    owner: str,
+) -> None:
+    """Create or refresh a small owner record without replacing another owner."""
+    if path.exists():
+        current = load_data(path)
+        current_owner = current.get(owner_key)
+        if current_owner != owner:
+            raise WorkflowError(
+                f"Cannot replace {path.name} owned by {current_owner!r} with owner {owner!r}."
+            )
+    save_data(path, data)
+
+
+def remove_owned_data(path: Path, *, owner_key: str, owner: str) -> bool:
+    """Remove an owner record only when it still names the expected owner."""
+    if not path.exists():
+        return False
+    current = load_data(path)
+    if current.get(owner_key) != owner:
+        return False
+    path.unlink()
+    try:
+        directory = os.open(path.parent, os.O_RDONLY)
+    except OSError:
+        return True
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    return True
+
+
 @contextmanager
 def workflow_lock(root: Path) -> Iterator[None]:
     lock_key = hashlib.sha256(str(root).encode("utf-8")).hexdigest()
     lock_path = Path(tempfile.gettempdir()) / "multi-agent-role-work-locks" / f"{lock_key}.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_timeout = os.environ.get("SDLC_LOCK_TIMEOUT", "5")
+    try:
+        timeout = float(raw_timeout)
+    except ValueError as exc:
+        raise WorkflowError(
+            "SDLC_LOCK_TIMEOUT must be a non-negative finite number of seconds."
+        ) from exc
+    if not math.isfinite(timeout) or timeout < 0:
+        raise WorkflowError(
+            "SDLC_LOCK_TIMEOUT must be a non-negative finite number of seconds."
+        )
     descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-    timeout = float(os.environ.get("SDLC_LOCK_TIMEOUT", "5"))
-    deadline = time.monotonic() + max(timeout, 0)
+    deadline = time.monotonic() + timeout
     acquired = False
     try:
         while not acquired:

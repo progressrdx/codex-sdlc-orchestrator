@@ -5,6 +5,20 @@ from __future__ import annotations
 from typing import Any
 
 from command_runtime import invoke as invoke_bound
+from stage_submission import (
+    StageSubmissionError,
+    finalize_stage_submission,
+    prepare_stage_submission,
+    store_submission_receipt,
+)
+
+
+SOURCE_IDENTITY_FIELDS = (
+    "git_head",
+    "git_tree",
+    "candidate_manifest_sha256",
+    "source_tree_sha256",
+)
 
 
 def invoke(name: str, api: Any, args: Any) -> Any:
@@ -33,6 +47,25 @@ def indexed_document(root: Path, raw_path: str) -> tuple[Path, Path, str]:
     return absolute, relative, content_sha256(absolute)
 
 
+def require_execution_candidate(
+    execution: dict[str, Any], binding: dict[str, Any]
+) -> None:
+    """Require the executed tree to be the exact recorded delivery candidate."""
+    candidate = execution.get("candidate", {})
+    expected = {
+        "kind": "git_commit",
+        "commit_oid": binding.get("git_head"),
+        "tree_oid": binding.get("git_tree"),
+        "manifest_sha256": binding.get("candidate_manifest_sha256"),
+    }
+    if not isinstance(candidate, dict) or any(
+        candidate.get(key) != value for key, value in expected.items()
+    ):
+        raise WorkflowError(
+            "Verification execution candidate does not match the recorded commit/tree manifest."
+        )
+
+
 def cmd_record_core_goals(args: argparse.Namespace) -> None:
     root = repository_root(args.root)
     path, state = load_state(root, args.id)
@@ -48,6 +81,15 @@ def cmd_record_core_goals(args: argparse.Namespace) -> None:
     missing_ids = [goal_id for goal_id in goals if goal_id.lower() not in text]
     if missing_ids:
         raise WorkflowError("Core-goal evidence is missing IDs: " + ",".join(missing_ids))
+    existing_goals = state.get("core_goals", {})
+    if existing_goals and all(
+        existing_goals.get(goal_id, {}).get("description") == description
+        and existing_goals.get(goal_id, {}).get("evidence") == str(relative)
+        and existing_goals.get(goal_id, {}).get("evidence_sha256") == evidence_hash
+        for goal_id, description in goals.items()
+    ) and set(existing_goals) == set(goals):
+        print("Core goals already locked: " + ",".join(goals))
+        return
     timestamp = now()
     state["core_goals"] = {
         goal_id: {
@@ -86,6 +128,16 @@ def cmd_register_acceptance_criteria(args: argparse.Namespace) -> None:
     missing_ids = [criterion_id for criterion_id in criteria if criterion_id.lower() not in prd_text]
     if missing_ids:
         raise WorkflowError("PRD is missing acceptance criterion IDs: " + ",".join(missing_ids))
+    existing_criteria = state.get("acceptance_criteria", {})
+    if existing_criteria and all(
+        existing_criteria.get(criterion_id, {}).get("description") == description
+        and existing_criteria.get(criterion_id, {}).get("priority") == "must"
+        and existing_criteria.get(criterion_id, {}).get("prd_sha256")
+        == prd.get("evidence_sha256")
+        for criterion_id, description in criteria.items()
+    ) and set(existing_criteria) == set(criteria):
+        print("Acceptance criteria already registered: " + ",".join(criteria))
+        return
     state["acceptance_criteria"] = {
         criterion_id: {
             "description": description,
@@ -220,8 +272,9 @@ def require_current_source(root: Path, state: dict[str, Any]) -> dict[str, Any]:
         tuple(source.get("scope_paths", [])),
         tuple(source.get("ignored_paths", [])),
     )
-    if source.get("source_tree_sha256") != current["source_tree_sha256"]:
+    if any(source.get(key) != current.get(key) for key in SOURCE_IDENTITY_FIELDS):
         raise WorkflowError("Record the current source revision before this evidence.")
+    require_execution_candidate(source.get("test_execution", {}), source)
     if current["dirty_paths"]:
         raise WorkflowError("Source tree has uncommitted changes: " + ",".join(current["dirty_paths"]))
     return current
@@ -235,17 +288,29 @@ def cmd_submit_verification(args: argparse.Namespace) -> None:
         raise WorkflowError("Verification bundles can only be submitted during strict verification.")
     manifest_path, manifest_relative = repository_evidence_path(root, args.manifest)
     manifest = load_data(manifest_path)
+    idempotency_key = manifest.get("idempotency_key")
+    expected_revision = manifest.get("expected_revision")
     source_spec = manifest.get("source")
+    report_spec = manifest.get("report")
     journey_spec = manifest.get("journey")
     criteria_spec = manifest.get("criteria")
-    if not isinstance(source_spec, dict) or not isinstance(journey_spec, dict):
-        raise WorkflowError("Verification manifest requires source and journey mappings.")
+    if (
+        not isinstance(source_spec, dict)
+        or not isinstance(report_spec, dict)
+        or not isinstance(journey_spec, dict)
+    ):
+        raise WorkflowError(
+            "Verification manifest requires source, report, and journey mappings."
+        )
     if not isinstance(criteria_spec, list):
         raise WorkflowError("Verification manifest requires a criteria list.")
 
     scope_paths = tuple(str(item) for item in source_spec.get("paths", []) if str(item).strip())
     ignored_paths = tuple(
         str(item) for item in source_spec.get("ignore_paths", []) if str(item).strip()
+    )
+    output_paths = tuple(
+        str(item) for item in source_spec.get("output_paths", []) if str(item).strip()
     )
     source_evidence, source_relative, source_hash = indexed_document(
         root, str(source_spec.get("evidence", ""))
@@ -255,6 +320,36 @@ def cmd_submit_verification(args: argparse.Namespace) -> None:
     test_command = str(source_spec.get("test_command", "")).strip()
     if not build_command or not test_command:
         raise WorkflowError("Verification manifest source requires build_command and test_command.")
+    command_timeout = parse_verification_timeout(
+        source_spec.get("command_timeout", 300)
+    )
+    if idempotency_key is None or expected_revision is None:
+        raise WorkflowError(
+            "Verification idempotency_key and expected_revision are required."
+        )
+    submission_payload = {
+        key: value
+        for key, value in manifest.items()
+        if key not in {"idempotency_key", "expected_revision"}
+    }
+    try:
+        submission_plan = prepare_stage_submission(
+            stage="verification",
+            current_stage=state["workflow"]["current_stage"],
+            expected_revision=expected_revision,
+            current_revision=state["revision"],
+            idempotency_key=str(idempotency_key),
+            payload=submission_payload,
+            receipts=state.get("stage_submissions", {}),
+        )
+    except StageSubmissionError as exc:
+        raise WorkflowError(str(exc)) from exc
+    if submission_plan["action"] == "replay":
+        print(
+            "Verification submission already submitted: "
+            f"{submission_plan['idempotency_key']}"
+        )
+        return
     current = current_source_fingerprint(root, scope_paths, ignored_paths)
     if current["dirty_paths"]:
         raise WorkflowError(
@@ -333,19 +428,52 @@ def cmd_submit_verification(args: argparse.Namespace) -> None:
     absent = [check for check in normalized_checks if check not in journey_text]
     if absent:
         raise WorkflowError("Journey report is missing check sections: " + ",".join(absent))
+    verification_evidence, verification_relative, verification_hash = indexed_document(
+        root, str(report_spec.get("evidence", ""))
+    )
+    del verification_evidence
+    if verification_hash == journey_hash:
+        raise WorkflowError(
+            "The consolidated verification report and final journey require distinct evidence."
+        )
+    work_item_id = str(manifest.get("work_item_id", "")).strip()
+    if not work_item_id:
+        raise WorkflowError("Verification manifest requires a completed testing work_item_id.")
+    require_completed_output(
+        root,
+        state,
+        work_item_id,
+        "verification",
+        "testing",
+        "verification_report",
+        verification_hash,
+        str(verification_relative),
+    )
+    require_completed_output(
+        root,
+        state,
+        work_item_id,
+        "verification",
+        "testing",
+        "journey_report",
+        journey_hash,
+        str(journey_relative),
+    )
 
     execution = execute_verification_commands(
         root,
         state,
         (("build", build_command), ("test", test_command)),
-        parse_verification_timeout(source_spec.get("command_timeout", 300)),
+        command_timeout,
         scope_paths=scope_paths,
         ignored_paths=ignored_paths,
+        output_paths=output_paths,
     )
+    require_execution_candidate(execution, current)
     after_execution = current_source_fingerprint(root, scope_paths, ignored_paths)
     if after_execution["dirty_paths"] or any(
         after_execution.get(key) != current.get(key)
-        for key in ("git_head", "source_tree_sha256")
+        for key in SOURCE_IDENTITY_FIELDS
     ):
         raise WorkflowError(
             "Verification commands changed the scoped source; restore or commit intentionally, "
@@ -359,6 +487,7 @@ def cmd_submit_verification(args: argparse.Namespace) -> None:
         "evidence_sha256": source_hash,
         "build_command": build_command,
         "test_command": test_command,
+        "output_paths": list(output_paths),
         "test_execution": execution,
         "recorded_at": timestamp,
     }
@@ -373,13 +502,38 @@ def cmd_submit_verification(args: argparse.Namespace) -> None:
         "source_tree_sha256": current["source_tree_sha256"],
         "recorded_at": timestamp,
     }
+    state["artifacts"]["verification_report"] = {
+        "path": str(verification_relative),
+        "status": "ready",
+        "evidence_sha256": verification_hash,
+        "updated_at": timestamp,
+        "notes": f"Registered atomically from {manifest_relative}.",
+        "producer_work_item_id": work_item_id,
+    }
     state["artifacts"]["journey_report"] = {
         "path": str(journey_relative),
         "status": "ready",
         "evidence_sha256": journey_hash,
         "updated_at": timestamp,
         "notes": f"Registered atomically from {manifest_relative}.",
+        "producer_work_item_id": work_item_id,
     }
+    if submission_plan is not None:
+        try:
+            receipt = finalize_stage_submission(
+                submission_plan,
+                applied_revision=state["revision"] + 1,
+                result={
+                    "source_tree_sha256": current["source_tree_sha256"],
+                    "profile": profile,
+                },
+            )
+            receipts, _ = store_submission_receipt(
+                state.get("stage_submissions", {}), receipt
+            )
+        except StageSubmissionError as exc:
+            raise WorkflowError(str(exc)) from exc
+        state["stage_submissions"] = receipts
     add_history(
         state,
         "verification_bundle_submitted",
@@ -422,7 +576,9 @@ def cmd_record_source_revision(args: argparse.Namespace) -> None:
         (("build", args.build_command), ("test", args.test_command)),
         scope_paths=tuple(args.source_path or ()),
         ignored_paths=tuple(args.ignore_source_path or ()),
+        output_paths=tuple(args.output_path or ()),
     )
+    require_execution_candidate(execution, current)
     after_execution = current_source_fingerprint(
         root,
         tuple(args.source_path or ()),
@@ -430,7 +586,7 @@ def cmd_record_source_revision(args: argparse.Namespace) -> None:
     )
     if after_execution["dirty_paths"] or any(
         after_execution.get(key) != current.get(key)
-        for key in ("git_head", "source_tree_sha256")
+        for key in SOURCE_IDENTITY_FIELDS
     ):
         raise WorkflowError("Verification commands changed the scoped source.")
     current = after_execution
@@ -440,6 +596,7 @@ def cmd_record_source_revision(args: argparse.Namespace) -> None:
         "evidence_sha256": evidence_hash,
         "build_command": args.build_command.strip(),
         "test_command": args.test_command.strip(),
+        "output_paths": list(args.output_path or ()),
         "test_execution": execution,
         "recorded_at": now(),
     }
@@ -467,6 +624,16 @@ def cmd_record_criterion_verdict(args: argparse.Namespace) -> None:
     text = absolute.read_text(encoding="utf-8").lower()
     if args.criterion_id.lower() not in text or args.verdict.replace("_", " ") not in text.replace("_", " "):
         raise WorkflowError("Verdict evidence must identify the criterion and verdict.")
+    require_completed_output(
+        root,
+        state,
+        args.work_item_id,
+        "verification",
+        "testing",
+        f"criterion_verdict:{args.criterion_id}",
+        evidence_hash,
+        str(relative),
+    )
     state["criterion_verdicts"][args.criterion_id] = {
         "verdict": args.verdict,
         "verified_by": "testing",
@@ -474,6 +641,7 @@ def cmd_record_criterion_verdict(args: argparse.Namespace) -> None:
         "evidence": str(relative),
         "evidence_sha256": evidence_hash,
         "source_tree_sha256": current["source_tree_sha256"],
+        "producer_work_item_id": args.work_item_id,
         "recorded_at": now(),
     }
     add_history(state, "criterion_verdict_recorded", f"{args.criterion_id}:{args.verdict}")
@@ -506,6 +674,16 @@ def cmd_record_user_journey(args: argparse.Namespace) -> None:
     absent = [check for check in checks if check not in text]
     if absent:
         raise WorkflowError("Journey report is missing check sections: " + ",".join(absent))
+    require_completed_output(
+        root,
+        state,
+        args.work_item_id,
+        "verification",
+        "testing",
+        "journey_report",
+        evidence_hash,
+        str(relative),
+    )
     timestamp = now()
     state["journey_validation"] = {
         "checks": checks,
@@ -514,6 +692,7 @@ def cmd_record_user_journey(args: argparse.Namespace) -> None:
         "evidence": str(relative),
         "evidence_sha256": evidence_hash,
         "source_tree_sha256": current["source_tree_sha256"],
+        "producer_work_item_id": args.work_item_id,
         "recorded_at": timestamp,
     }
     state["artifacts"]["journey_report"] = {
@@ -522,6 +701,7 @@ def cmd_record_user_journey(args: argparse.Namespace) -> None:
         "evidence_sha256": evidence_hash,
         "updated_at": timestamp,
         "notes": "End-to-end validation against the final source revision.",
+        "producer_work_item_id": args.work_item_id,
     }
     add_history(state, "user_journey_verified", current["source_tree_sha256"])
     save_state(path, state)
@@ -548,13 +728,24 @@ def cmd_record_core_outcome(args: argparse.Namespace) -> None:
     text = absolute.read_text(encoding="utf-8").lower()
     if args.goal_id.lower() not in text or args.verdict.replace("_", " ") not in text.replace("_", " "):
         raise WorkflowError("Outcome evidence must identify the goal and verdict.")
+    require_completed_output(
+        root,
+        state,
+        args.work_item_id,
+        "acceptance",
+        "testing",
+        f"core_outcome:{args.goal_id}",
+        evidence_hash,
+        str(relative),
+    )
     state["core_outcomes"][args.goal_id] = {
         "verdict": args.verdict,
-        "verified_by": "product",
+        "verified_by": "testing",
         "scope_change_id": args.scope_change_id,
         "evidence": str(relative),
         "evidence_sha256": evidence_hash,
         "source_tree_sha256": current["source_tree_sha256"],
+        "producer_work_item_id": args.work_item_id,
         "recorded_at": now(),
     }
     add_history(state, "core_outcome_recorded", f"{args.goal_id}:{args.verdict}")

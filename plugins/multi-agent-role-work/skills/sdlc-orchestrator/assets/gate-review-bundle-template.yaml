@@ -2,6 +2,11 @@
 #
 # Submit once after the independent role tasks have returned:
 # workflow.py submit-gate-review --manifest <this-file>
+# Replace both request-control fields before submission. The revision comes
+# from the immediately preceding status/overview read; reusing the key with a
+# different payload is rejected.
+idempotency_key: readiness-review-round-001
+expected_revision: 0
 gate: readiness_review
 
 # Include exactly the roles required by the selected mode and gate.
@@ -9,14 +14,26 @@ gate: readiness_review
 decisions:
   - role: engineering
     actor_ref: engineering-task-id
+    work_item_id: engineering-readiness-attempt-001
     verdict: approve
     evidence: docs/requirements/<workflow-id>/reviews/readiness-engineering.md
     notes: No blocking technical findings remain.
+    findings: []
   - role: testing
     actor_ref: testing-task-id
+    work_item_id: testing-readiness-attempt-001
     verdict: approve
     evidence: docs/requirements/<workflow-id>/reviews/readiness-testing.md
     notes: The test plan is executable and covers the approved scope.
+    findings: []
+
+# A reject requires one or more structured findings. A blocker or major
+# finding cannot coexist with approve. Each finding is upserted into the issue
+# ledger with a stable key instead of being left only in prose.
+# findings:
+#   - severity: blocker
+#     owner: engineering
+#     summary: The immutable candidate cannot be reproduced from the commit.
 
 meeting:
   title: Readiness review
@@ -24,4 +41,15 @@ meeting:
     - engineering
     - testing
   outcome: approved
-  path: docs/requirements/<workflow-id>/meetings/MTG-readiness-review.md
+  summary: Engineering and testing reviewed the same readiness baseline.
+  decision: Proceed only when every required role approves.
+  rationale: The approved design and executable test plan have no blocker.
+  action_owners:
+    - "engineering: implement the approved baseline"
+    - "testing: independently verify the exact delivery candidate"
+  open_questions: []
+  next_step: Advance the readiness gate.
+
+# A separate Markdown path remains supported for recovery or organizations that
+# require standalone minutes. Prefer the inline structured record above so one
+# manifest is the durable cross-role record rather than a fourth authored file.

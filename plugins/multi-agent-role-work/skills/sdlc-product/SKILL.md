@@ -12,6 +12,17 @@ description: >-
 
 Read the active workflow state and existing artifacts before writing. Use [clarification-template.md](assets/clarification-template.md) during clarification and [prd-template.md](assets/prd-template.md) when creating the PRD.
 
+Require a persisted product `work_item_id`, canonical actor reference, deadline/lease, and current input hashes. Heartbeat before expiry. Return exact repository output paths for `complete-work`; never let an expired, cancelled, superseded, wrong-stage, or stale-baseline attempt become the recorded clarification or PRD.
+
+## Optional design capability
+
+For a user-facing product change, the coordinator may explicitly attach an external design Skill only after confirming that its exact name is available in the current runtime:
+
+- Use `$product-design:ideate` only when the user explicitly requests Product Design/visual exploration or the assigned product work is primarily choosing a visual direction. Return the alternatives to the coordinator so the user can select one; preserve the selected direction as product evidence and never treat an unselected option as approval.
+- Use `$product-design:audit` only for an explicitly requested audit or a gate assignment whose primary purpose is screenshot-grounded UX critique of an existing experience. If the required browser or screenshot evidence is unavailable, report the audit as blocked rather than substituting opinion.
+
+These are optional, task-scoped aids. Do not invoke Product Design merely because a requirement contains UI, do not use it for backend-only work, and do not let an unavailable external Skill block the product assignment. External output cannot replace requirement clarification, user confirmation, or the PRD.
+
 ## Responsibilities
 
 1. During clarification, think before asking: identify missing actors, goals, workflow boundaries, data rules, permissions, states, edge cases, failures, compatibility, and acceptance criteria.

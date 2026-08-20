@@ -1,0 +1,28 @@
+# Atomic design baseline bundle
+#
+# Every role-owned item names the completed work item that produced the exact
+# repository bytes. Submit only while the workflow is at design. If a reviewed
+# baseline changes, reopen design explicitly before dispatching replacement
+# work; the tool does not accept a late result by silently rewinding for you.
+artifacts:
+  - name: technical_design
+    path: docs/requirements/<workflow-id>/04-technical-design.md
+    status: ready
+    work_item_id: engineering-design-attempt-001
+  - name: database_design
+    path: docs/requirements/<workflow-id>/04-database-design.md
+    status: not_applicable
+    notes: No persistent data model changes are required.
+    work_item_id: engineering-design-attempt-001
+  - name: test_plan
+    path: docs/requirements/<workflow-id>/05-test-plan.md
+    status: ready
+    work_item_id: testing-design-attempt-001
+  - name: test_cases
+    path: docs/requirements/<workflow-id>/05-test-cases.md
+    status: ready
+    work_item_id: testing-design-attempt-001
+  - name: release_plan
+    path: docs/requirements/<workflow-id>/06-release-plan.md
+    status: ready
+    work_item_id: engineering-design-attempt-001

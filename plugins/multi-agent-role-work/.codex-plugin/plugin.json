@@ -1,6 +1,6 @@
 {
   "name": "multi-agent-role-work",
-  "version": "2.6.0+codex.20260805000000",
+  "version": "2.6.0+codex.20260810134933",
   "description": "Cost-aware formal multi-role delivery with executable verification, explicit routing, and user approval without lifecycle hooks.",
   "author": {
     "name": "progressrdx",
@@ -19,7 +19,7 @@
   "interface": {
     "displayName": "Multi-Role SDLC",
     "shortDescription": "Risk-adaptive product, engineering, and testing workflow.",
-    "longDescription": "Start with an actionable Team Development request in any project; no workflow command knowledge is required. The orchestrator opens discovery rather than coding, performs evidence-backed requirement and risk triage, selects the lowest safe micro, quick, standard, or strict flow, locks user-confirmed core outcomes, atomically records complete role-gate reviews and strict verification bundles, supports user-approved impact-scoped change control with conservative fallback, requires profile-appropriate semantic final-user-journey checks, binds distinct role task references into gate snapshots, requires final user delivery approval in every mode, and preserves recoverable checksummed state, human authorization checkpoints, and structured meeting records.",
+    "longDescription": "Start with an actionable Team Development request in any project; no workflow command knowledge is required. The orchestrator opens discovery rather than coding, performs evidence-backed requirement and risk triage, selects the lowest safe micro, quick, standard, or strict flow, persists each delegated role attempt and its content-addressed outputs, atomically records complete role-gate reviews and strict verification bundles, executes checks against one immutable delivery candidate, supports explicit impact-scoped change control, requires profile-appropriate final-user-journey checks and final user approval, and preserves recoverable checksummed state with runtime provenance and deterministic lifecycle recovery.",
     "developerName": "progressrdx",
     "category": "Productivity",
     "capabilities": [
@@ -34,12 +34,15 @@
       "State audit and backup recovery",
       "Impact-scoped change control",
       "Traceable independent role reviews",
+      "Persisted role work items and leases",
+      "Immutable delivery candidates",
       "Atomic gate-review bundles",
-      "Active-workflow lifecycle guards",
+      "Optional external design-skill routing",
       "Source-live verification in every mode",
       "Command-backed fail-fast testing",
       "Pausable low-context workflow routing",
       "Modular workflow command architecture",
+      "Runtime provenance diagnostics",
       "Documented assurance boundaries"
     ],
     "defaultPrompt": [

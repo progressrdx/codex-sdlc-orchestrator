@@ -20,6 +20,7 @@ from risk_policy import (
     REQUIREMENT_AREAS,
     RISK_FLAGS,
     combined_risk_flags,
+    escalation_acceptance_expired,
     recommended_mode_for,
     refresh_escalation,
 )
@@ -27,6 +28,11 @@ from risk_commands import invoke as invoke_risk_command
 from review_commands import invoke as invoke_review_command
 from assurance_commands import invoke as invoke_assurance_command
 from delivery_commands import invoke as invoke_delivery_command
+from work_commands import invoke as invoke_work_command, require_completed_output
+from lifecycle_commands import invoke as invoke_lifecycle_command
+from artifact_commands import invoke as invoke_artifact_command
+from work_items import WorkItemError, supersede_work_item, validate_work_item
+from stage_submission import StageSubmissionError, validate_submission_receipt
 from execution_policy import (
     EXECUTION_POLICIES,
     execute_verification_commands,
@@ -34,10 +40,20 @@ from execution_policy import (
     repository_context,
 )
 from source_policy import SourcePolicyError, source_binding, workspace_binding
+from runtime_provenance import (
+    ProvenanceError,
+    default_plugin_root,
+    doctor_exit_code,
+    doctor_runtime,
+    inspect_runtime,
+    require_mutation_runtime,
+)
 from state_store import (
     WorkflowError,
     atomic_write_text,
+    claim_owned_data,
     load_data,
+    remove_owned_data,
     save_data,
     state_checksum,
     verify_state_checksum,
@@ -46,7 +62,7 @@ from state_store import (
 from workflow_cli import MUTATING_COMMANDS, build_parser as create_cli_parser
 
 
-CURRENT_SCHEMA_VERSION = 10
+CURRENT_SCHEMA_VERSION = 11
 WORKFLOW_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{2,80}")
 ROLES = ("product", "engineering", "testing")
 GATES = ("prd_review", "readiness_review", "acceptance")
@@ -97,6 +113,20 @@ ARTIFACT_STAGE = {
     "delivery_report": "acceptance",
     "delivery_confirmation": "delivery_confirmation",
 }
+ARTIFACT_ROLE = {
+    "clarification_questions": "product",
+    "prd": "product",
+    "technical_design": "engineering",
+    "database_design": "engineering",
+    "test_plan": "testing",
+    "test_cases": "testing",
+    "release_plan": "engineering",
+    "prototype": "engineering",
+    "implementation": "engineering",
+    "verification_report": "testing",
+    "journey_report": "testing",
+    "traceability": "testing",
+}
 ARTIFACT_CHANGE_STAGE = {
     "original_request": "intake",
     "risk_assessment": "scope_check",
@@ -137,6 +167,27 @@ ARTIFACT_INVALIDATES_GATES = {
     "delivery_confirmation": (),
 }
 NOT_APPLICABLE_ALLOWED = {"database_design", "test_cases", "release_plan", "traceability"}
+SPECIALIZED_ARTIFACT_COMMANDS = {
+    "user_feedback": "record-user-feedback",
+    "delivery_confirmation": "record-delivery-confirmation",
+}
+SOURCE_IDENTITY_FIELDS = (
+    "git_head",
+    "git_tree",
+    "candidate_manifest_sha256",
+    "source_tree_sha256",
+)
+ATOMIC_ARTIFACT_BUNDLE_GROUPS = {
+    "design": frozenset(
+        {
+            "technical_design",
+            "database_design",
+            "test_plan",
+            "test_cases",
+            "release_plan",
+        }
+    ),
+}
 DOCUMENT_ARTIFACTS = {
     "risk_assessment",
     "clarification_questions",
@@ -379,37 +430,276 @@ def validate_workflow_id(workflow_id: str) -> None:
         )
 
 
-def state_path(root: Path, workflow_id: str | None = None) -> Path:
-    if workflow_id:
-        validate_workflow_id(workflow_id)
-        return root / ".ai-workflow" / workflow_id / "state.yaml"
-    pointer = active_pointer(root)
-    if not pointer.exists():
-        raise WorkflowError("No active workflow. Start one with the init command.")
-    data = load_data(pointer)
+LIVE_POINTER_STATUSES = frozenset({"active", "paused"})
+TERMINAL_WORKFLOW_STATUSES = frozenset({"completed", "abandoned"})
+LIFECYCLE_MUTATION_COMMANDS = frozenset(
+    {"init", "start", "repair-state", "resume", "activate", "deactivate", "abandon", "reopen"}
+)
+TOOL_IDENTITY_FIELDS = (
+    "schema_version", "plugin_name", "version", "runtime_root", "entry_path",
+    "entry_sha256", "payload_sha256", "git_revision", "dirty",
+)
+
+
+def canonical_state_path(root: Path, workflow_id: str) -> Path:
+    validate_workflow_id(workflow_id)
+    return root / ".ai-workflow" / workflow_id / "state.yaml"
+
+
+def resolve_pointer_path(root: Path, data: dict[str, Any]) -> Path:
+    workflow_id = data.get("workflow_id")
     relative = data.get("state_path")
+    if not isinstance(workflow_id, str):
+        raise WorkflowError(f"Invalid active pointer workflow_id: {active_pointer(root)}")
+    validate_workflow_id(workflow_id)
     if not isinstance(relative, str) or not relative:
-        raise WorkflowError(f"Invalid active pointer: {pointer}")
+        raise WorkflowError(f"Invalid active pointer state_path: {active_pointer(root)}")
     resolved = (root / relative).resolve()
     try:
-        resolved.relative_to(root)
+        resolved.relative_to(root.resolve())
     except ValueError as exc:
-        raise WorkflowError("Active workflow state must be inside the repository root.") from exc
+        raise WorkflowError("Active pointer state_path must be inside the repository root.") from exc
+    expected = canonical_state_path(root, workflow_id).resolve()
+    if resolved != expected:
+        raise WorkflowError(
+            f"Active pointer state_path does not match workflow_id {workflow_id}: {relative}"
+        )
     return resolved
 
 
-def load_state(root: Path, workflow_id: str | None = None) -> tuple[Path, dict[str, Any]]:
-    path = state_path(root, workflow_id)
+def state_path(root: Path, workflow_id: str | None = None) -> Path:
+    if workflow_id:
+        return canonical_state_path(root, workflow_id)
+    pointer = active_pointer(root)
+    if pointer.exists():
+        # Resolve without loading state so audit/repair can still address a corrupt
+        # state file. Normal state loads validate the repository-wide live invariant.
+        return resolve_pointer_path(root, load_data(pointer))
+    recovered = reconcile_live_workflow_pointer(root)
+    if recovered is None:
+        raise WorkflowError("No active workflow. Start one with init or activate an existing ID.")
+    return recovered[0]
+
+
+def pointer_record(root: Path, path: Path, state: dict[str, Any]) -> dict[str, Any]:
+    workflow = state["workflow"]
+    return {
+        "workflow_id": workflow["id"],
+        "state_path": str(path.relative_to(root)),
+        "state_revision": state["revision"],
+        "status": workflow["status"],
+        "updated_at": now(),
+    }
+
+
+def claim_active_pointer(root: Path, path: Path, state: dict[str, Any]) -> None:
+    workflow = state["workflow"]
+    if workflow["status"] not in LIVE_POINTER_STATUSES:
+        raise WorkflowError(f"Cannot activate workflow with status {workflow['status']}.")
+    pointer = active_pointer(root)
+    if pointer.exists():
+        current = load_data(pointer)
+        current_id = current.get("workflow_id")
+        if current_id != workflow["id"]:
+            raise WorkflowError(
+                f"Workflow {current_id} is already active. Deactivate, abandon, or complete it first."
+            )
+    claim_owned_data(
+        pointer,
+        pointer_record(root, path, state),
+        owner_key="workflow_id",
+        owner=workflow["id"],
+    )
+
+
+def release_active_pointer(root: Path, workflow_id: str) -> bool:
+    return remove_owned_data(
+        active_pointer(root), owner_key="workflow_id", owner=workflow_id
+    )
+
+
+def _load_state_file(root: Path, path: Path) -> dict[str, Any]:
     state = load_data(path)
     verify_state_checksum(state, path, CURRENT_SCHEMA_VERSION)
     migrate_state(root, state)
     validate_state(state, path)
+    return state
+
+
+def _live_workflow_states(root: Path) -> list[tuple[Path, dict[str, Any]]]:
+    """Return every valid active/paused workflow, failing closed on corrupt state."""
+    live: list[tuple[Path, dict[str, Any]]] = []
+    workflow_root = root / ".ai-workflow"
+    if not workflow_root.exists():
+        return live
+    for path in sorted(workflow_root.glob("*/state.yaml")):
+        state = _load_state_file(root, path)
+        workflow_id = state["workflow"].get("id")
+        if workflow_id != path.parent.name:
+            raise WorkflowError(
+                f"Workflow state ID {workflow_id!r} does not match directory {path.parent.name!r}."
+            )
+        if state["workflow"]["status"] in LIVE_POINTER_STATUSES:
+            live.append((path.resolve(), state))
+    return live
+
+
+def reconcile_live_workflow_pointer(
+    root: Path,
+) -> tuple[Path, dict[str, Any]] | None:
+    """Validate the single-live invariant and recover a missing/stale pointer."""
+    pointer_path = active_pointer(root)
+    pointed_path: Path | None = None
+    pointed_state: dict[str, Any] | None = None
+    pointer_owner: str | None = None
+    if pointer_path.exists():
+        pointer = load_data(pointer_path)
+        pointed_path = resolve_pointer_path(root, pointer)
+        pointed_state = _load_state_file(root, pointed_path)
+        pointer_owner = str(pointer.get("workflow_id"))
+
+    live = _live_workflow_states(root)
+    if len(live) > 1:
+        owners = ", ".join(item[1]["workflow"]["id"] for item in live)
+        raise WorkflowError(
+            "Multiple live workflows were found; refusing to choose or replace the active "
+            f"pointer: {owners}. Deactivate or abandon all but one workflow explicitly."
+        )
+
+    live_item = live[0] if live else None
+    if pointed_state is not None:
+        pointed_status = pointed_state["workflow"]["status"]
+        if pointed_status not in LIVE_POINTER_STATUSES:
+            release_active_pointer(root, pointer_owner or "")
+            pointed_path = None
+            pointed_state = None
+        elif live_item is None or live_item[1]["workflow"]["id"] != pointer_owner:
+            raise WorkflowError(
+                "Active pointer ownership does not match the repository's live workflow state."
+            )
+
+        if pointed_state is not None:
+            pointer_revision = load_data(pointer_path).get("state_revision")
+            if pointer_revision is not None and (
+                not isinstance(pointer_revision, int)
+                or pointer_revision > pointed_state["revision"]
+            ):
+                raise WorkflowError(
+                    f"Active pointer revision {pointer_revision!r} is ahead of state revision "
+                    f"{pointed_state['revision']}; refusing to rewrite the pointer."
+                )
+
+    if live_item is None:
+        return None
+
+    live_path, live_state = live_item
+    if pointed_path is None:
+        claim_active_pointer(root, live_path, live_state)
+    else:
+        expected = pointer_record(root, live_path, live_state)
+        pointer = load_data(pointer_path)
+        if any(pointer.get(key) != expected[key] for key in ("state_revision", "status")):
+            claim_active_pointer(root, live_path, live_state)
+    return live_path, live_state
+
+
+def reconcile_pointer_for_state(
+    root: Path,
+    path: Path,
+    state: dict[str, Any],
+    *,
+    require_owner: bool,
+) -> None:
+    pointer_path = active_pointer(root)
+    workflow = state["workflow"]
+    if not pointer_path.exists():
+        if require_owner:
+            raise WorkflowError("No active workflow. Start one with init or activate an existing ID.")
+        return
+    pointer = load_data(pointer_path)
+    pointer_state_path = resolve_pointer_path(root, pointer)
+    pointer_id = pointer.get("workflow_id")
+    if pointer_id != workflow["id"]:
+        if require_owner:
+            raise WorkflowError(
+                f"Active pointer workflow {pointer_id} does not match state workflow {workflow['id']}."
+            )
+        return
+    if pointer_state_path != path.resolve():
+        raise WorkflowError("Active pointer resolved to the wrong workflow state file.")
+    if workflow["status"] not in LIVE_POINTER_STATUSES:
+        release_active_pointer(root, workflow["id"])
+        if require_owner:
+            raise WorkflowError(
+                "No active workflow. Removed a stale pointer to "
+                f"{workflow['status']} workflow {workflow['id']}."
+            )
+        return
+    pointer_revision = pointer.get("state_revision")
+    if pointer_revision is not None and (
+        not isinstance(pointer_revision, int) or pointer_revision > state["revision"]
+    ):
+        raise WorkflowError(
+            f"Active pointer revision {pointer_revision!r} is ahead of state revision {state['revision']}."
+        )
+    expected = pointer_record(root, path, state)
+    if any(pointer.get(key) != expected[key] for key in ("state_revision", "status")):
+        claim_active_pointer(root, path, state)
+
+
+def load_state(root: Path, workflow_id: str | None = None) -> tuple[Path, dict[str, Any]]:
+    path = state_path(root, workflow_id)
+    state = _load_state_file(root, path)
+    if workflow_id and state["workflow"].get("id") != workflow_id:
+        raise WorkflowError(
+            f"Workflow state ID {state['workflow'].get('id')} does not match requested ID {workflow_id}."
+        )
+    if workflow_id is None:
+        live = reconcile_live_workflow_pointer(root)
+        if live is None:
+            raise WorkflowError("No active workflow. Start one with init or activate an existing ID.")
+        if live[0] != path.resolve():
+            raise WorkflowError("Active pointer resolved to a different live workflow state file.")
+    reconcile_pointer_for_state(root, path, state, require_owner=workflow_id is None)
     return path, state
+
+
+def require_active_workflow_owner(root: Path, workflow_id: str | None) -> tuple[Path, dict[str, Any]]:
+    """Load the requested state only when it owns the repository live pointer."""
+    live = reconcile_live_workflow_pointer(root)
+    if live is None:
+        if workflow_id is not None:
+            path, selected = load_state(root, workflow_id)
+            status = selected["workflow"]["status"]
+            if status in TERMINAL_WORKFLOW_STATUSES:
+                return path, selected
+        raise WorkflowError("No active workflow. Activate it before mutating it.")
+    live_path, live_state = live
+    if workflow_id is not None and live_state["workflow"]["id"] != workflow_id:
+        raise WorkflowError(
+            f"Active workflow is {live_state['workflow']['id']}; refusing to mutate non-active "
+            f"workflow {workflow_id}. Activate it explicitly first."
+        )
+    reconcile_pointer_for_state(root, live_path, live_state, require_owner=True)
+    return live_path, live_state
+
+
+def ensure_pointer_available(root: Path, workflow_id: str) -> None:
+    live = reconcile_live_workflow_pointer(root)
+    if live is None:
+        return
+    _, state = live
+    if state["workflow"]["id"] != workflow_id:
+        raise WorkflowError(
+            f"Workflow {state['workflow']['id']} is already active. "
+            "Deactivate, abandon, or complete it first."
+        )
 
 
 def migrate_state(root: Path, state: dict[str, Any]) -> None:
     version = state.get("schema_version")
-    if version in {1, 2, 3, 4, 5, 6, 7, 8, 9}:
+    migrated_to_role_work_items = version in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+    if version in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}:
         state["schema_version"] = CURRENT_SCHEMA_VERSION
         state.setdefault("revision", 0)
         state.setdefault("human_approval_policy", {"required_gates": []})
@@ -437,6 +727,20 @@ def migrate_state(root: Path, state: dict[str, Any]) -> None:
     state.setdefault("verification_snapshot", {})
     state.setdefault("journey_validation", {})
     state.setdefault("repository_context", {})
+    state.setdefault("work_items", {})
+    state.setdefault("stage_submissions", {})
+    state.setdefault("runtime_provenance", {})
+    if migrated_to_role_work_items:
+        # Older schemas did not bind role-produced evidence to a leased work
+        # item. Preserve the bytes for audit, but never manufacture provenance
+        # or allow that evidence to satisfy a v11 role gate.
+        for name, artifact in state.get("artifacts", {}).items():
+            if name in ARTIFACT_ROLE and not artifact.get("producer_work_item_id"):
+                artifact["legacy_unbound"] = True
+        for decisions in state.get("decisions", {}).values():
+            for decision in decisions.values():
+                if not decision.get("producer_work_item_id"):
+                    decision["legacy_unbound"] = True
     for collection in ("artifacts", "human_approvals"):
         for item in state.get(collection, {}).values():
             if item.get("status") == "not_applicable" or item.get("evidence_sha256"):
@@ -497,8 +801,13 @@ def validate_state(state: dict[str, Any], path: Path) -> None:
         raise WorkflowError(f"Invalid workflow flow_stages in {path}: {configured_stages!r}")
     if stage not in configured_stages:
         raise WorkflowError(f"Invalid workflow stage in {path}: {stage!r}")
-    if workflow.get("status") not in {"active", "paused", "completed"}:
+    status = workflow.get("status")
+    if status not in {"active", "paused", "inactive", "completed", "abandoned"}:
         raise WorkflowError(f"Invalid workflow status in {path}: {workflow.get('status')!r}")
+    if (status == "completed") != (stage == "completed"):
+        raise WorkflowError(
+            f"Invalid workflow lifecycle in {path}: completed status and completed stage must match."
+        )
     required_gates = state.get("human_approval_policy", {}).get("required_gates", [])
     if not isinstance(required_gates, list) or any(gate not in GATES for gate in required_gates):
         raise WorkflowError(f"Invalid human approval policy in {path}")
@@ -515,9 +824,32 @@ def validate_state(state: dict[str, Any], path: Path) -> None:
         "verification_snapshot",
         "journey_validation",
         "repository_context",
+        "work_items",
+        "stage_submissions",
+        "runtime_provenance",
     ):
         if not isinstance(state.get(name), dict):
             raise WorkflowError(f"Invalid {name} mapping in {path}")
+    for work_item_id, work_item in state.get("work_items", {}).items():
+        try:
+            checked = validate_work_item(work_item)
+        except WorkItemError as exc:
+            raise WorkflowError(f"Invalid work item {work_item_id} in {path}: {exc}") from exc
+        if checked["work_item_id"] != work_item_id:
+            raise WorkflowError(f"Work item key does not match its ID in {path}: {work_item_id}")
+        if checked["role"] not in ROLES or checked["stage"] not in configured_stages:
+            raise WorkflowError(f"Work item has an invalid workflow role or stage: {work_item_id}")
+    for receipt_key, receipt in state.get("stage_submissions", {}).items():
+        try:
+            checked_receipt = validate_submission_receipt(receipt)
+        except StageSubmissionError as exc:
+            raise WorkflowError(
+                f"Invalid stage submission {receipt_key} in {path}: {exc}"
+            ) from exc
+        if checked_receipt["idempotency_key"] != receipt_key:
+            raise WorkflowError(
+                f"Stage-submission key does not match its receipt in {path}: {receipt_key}"
+            )
     for name in (
         "issues",
         "meetings",
@@ -565,6 +897,10 @@ def evidence_matches(root: Path, raw_path: str, expected_hash: str | None) -> bo
 
 def artifact_ready(root: Path, state: dict[str, Any], name: str) -> bool:
     item = state.get("artifacts", {}).get(name, {})
+    if name in ARTIFACT_ROLE and (
+        item.get("legacy_unbound") or not item.get("producer_work_item_id")
+    ):
+        return False
     if item.get("status") == "not_applicable":
         return True
     return item.get("status") == "ready" and evidence_matches(
@@ -582,6 +918,34 @@ def test_execution_ready(root: Path, execution: dict[str, Any]) -> bool:
             execution.get("log_sha256"),
         )
     )
+
+
+def execution_candidate_matches(
+    execution: dict[str, Any], binding: dict[str, Any]
+) -> bool:
+    candidate = execution.get("candidate", {})
+    if not isinstance(candidate, dict):
+        return False
+    if binding.get("binding_type") == "git_commit":
+        return all(
+            candidate.get(key) == expected
+            for key, expected in {
+                "kind": "git_commit",
+                "commit_oid": binding.get("git_head"),
+                "tree_oid": binding.get("git_tree"),
+                "manifest_sha256": binding.get("candidate_manifest_sha256"),
+            }.items()
+        )
+    if binding.get("binding_type") == "workspace_content":
+        return all(
+            candidate.get(key) == expected
+            for key, expected in {
+                "kind": "workspace_content",
+                "tree_oid": binding.get("candidate_tree"),
+                "manifest_sha256": binding.get("candidate_manifest_sha256"),
+            }.items()
+        )
+    return False
 
 
 def open_blockers(state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -641,6 +1005,8 @@ def decision_is_current(root: Path, decision: dict[str, Any]) -> bool:
     return (
         decision.get("verdict") in {"approve", "reject"}
         and bool(str(decision.get("actor_ref", "")).strip())
+        and bool(str(decision.get("producer_work_item_id", "")).strip())
+        and not decision.get("legacy_unbound")
         and evidence_matches(
             root, str(decision.get("evidence", "")), decision.get("evidence_sha256")
         )
@@ -721,8 +1087,22 @@ def rewind_workflow(
         raise WorkflowError(f"Stage {stage} is not valid for {mode} mode.")
     old_stage = state["workflow"]["current_stage"]
     rewind_index = stages.index(stage)
+    if rewind_index > stages.index(old_stage):
+        raise WorkflowError(
+            f"Reopen cannot move forward from {old_stage} to {stage}; use advance after satisfying gates."
+        )
     state["workflow"]["current_stage"] = stage
     state["workflow"]["status"] = "active"
+    for key in (
+        "paused_at",
+        "pause_reason",
+        "deactivated_at",
+        "deactivation_reason",
+        "abandoned_at",
+        "abandon_reason",
+        "completed_at",
+    ):
+        state["workflow"].pop(key, None)
 
     for gate in list(state.get("decisions", {})):
         if gate in stages and stages.index(gate) >= rewind_index:
@@ -769,6 +1149,25 @@ def rewind_workflow(
                 artifact["status"] = "superseded"
                 artifact["updated_at"] = now()
                 invalidated_artifacts.append(name)
+    superseded_revision = int(state.get("revision", 0)) + 1
+    for work_item_id, item in list(state.get("work_items", {}).items()):
+        work_stage = item.get("stage") if isinstance(item, dict) else None
+        if (
+            work_stage in stages
+            and stages.index(work_stage) >= rewind_index
+            and item.get("status") in {"dispatched", "running", "completed"}
+        ):
+            try:
+                state["work_items"][work_item_id] = supersede_work_item(
+                    item,
+                    at=now(),
+                    reason=reason,
+                    superseded_by_revision=superseded_revision,
+                )
+            except WorkItemError as exc:
+                raise WorkflowError(
+                    f"Unable to supersede stale work item {work_item_id}: {exc}"
+                ) from exc
     return old_stage, invalidated_artifacts, invalidated_meetings
 
 
@@ -821,10 +1220,15 @@ def stage_requirements(root: Path, state: dict[str, Any]) -> tuple[list[str], li
                     "dirty_paths": [],
                 }
             source = state.get("source_revision", {})
-            if not source or source.get("source_tree_sha256") != fingerprint["source_tree_sha256"]:
+            if not source or any(
+                source.get(key) != fingerprint.get(key)
+                for key in SOURCE_IDENTITY_FIELDS
+            ):
                 missing.append("source_revision:stale_or_missing")
             if not test_execution_ready(root, source.get("test_execution", {})):
                 missing.append("source_revision:test_execution")
+            elif not execution_candidate_matches(source["test_execution"], source):
+                missing.append("source_revision:candidate_mismatch")
             if fingerprint["dirty_paths"]:
                 missing.append("source_revision:uncommitted_source")
             criteria = state.get("acceptance_criteria", {})
@@ -891,7 +1295,12 @@ def stage_requirements(root: Path, state: dict[str, Any]) -> tuple[list[str], li
             missing.append("verification_snapshot:missing")
         elif not test_execution_ready(root, snapshot.get("test_execution", {})):
             missing.append("verification_snapshot:test_execution")
-        elif snapshot.get("source_tree_sha256") != current_workspace["source_tree_sha256"]:
+        elif not execution_candidate_matches(snapshot["test_execution"], snapshot):
+            missing.append("verification_snapshot:candidate_mismatch")
+        elif any(
+            snapshot.get(key) != current_workspace.get(key)
+            for key in ("candidate_tree", "candidate_manifest_sha256", "source_tree_sha256")
+        ):
             missing.append("verification_snapshot:source_changed_after_verification")
             notes.append(
                 "Product files changed after the recorded verification report; "
@@ -918,10 +1327,7 @@ def stage_requirements(root: Path, state: dict[str, Any]) -> tuple[list[str], li
             f"mode {escalation.get('from_mode')} is below recommended "
             f"{escalation.get('recommended_mode')}"
         )
-    if (
-        escalation.get("status") == "accepted_risk"
-        and str(escalation.get("acceptance_expires_on", "")) < now()[:10]
-    ):
+    if escalation_acceptance_expired(escalation):
         missing.append(f"escalation_acceptance_expired:{escalation.get('report_id', 'unknown')}")
         notes.append("The accepted escalation risk must be reassessed or escalated.")
 
@@ -1022,16 +1428,42 @@ def next_stage_name(state: dict[str, Any]) -> str | None:
     return stages[index + 1]
 
 
+def active_pointer_health(root: Path, state: dict[str, Any]) -> tuple[str, str | None]:
+    workflow = state["workflow"]
+    pointer_path = active_pointer(root)
+    if not pointer_path.exists():
+        return ("missing", None) if workflow["status"] in LIVE_POINTER_STATUSES else ("none", None)
+    try:
+        pointer = load_data(pointer_path)
+        resolve_pointer_path(root, pointer)
+    except WorkflowError as exc:
+        return "invalid", str(exc)
+    pointer_id = str(pointer.get("workflow_id", ""))
+    if pointer_id != workflow["id"]:
+        return "owned_by_other", pointer_id
+    if workflow["status"] not in LIVE_POINTER_STATUSES:
+        return "stale_terminal", pointer_id
+    if pointer.get("state_revision") != state["revision"] or pointer.get("status") != workflow["status"]:
+        return "stale", pointer_id
+    return "current", pointer_id
+
+
 def overview_payload(root: Path, state: dict[str, Any]) -> dict[str, Any]:
     workflow = state["workflow"]
     stage = workflow["current_stage"]
-    if workflow["status"] == "paused":
-        missing, notes = ["workflow:paused"], ["Resume the workflow before making changes."]
-    else:
-        missing, notes = stage_requirements(root, state)
+    status = workflow["status"]
+    stage_missing, stage_notes = stage_requirements(root, state)
+    missing, notes = list(stage_missing), list(stage_notes)
     health_warnings: list[str] = []
     recorded_context = state.get("repository_context", {})
     current_context = repository_context(root)
+    provenance = state.get("runtime_provenance", {})
+    current_tool = current_tool_identity()
+    last_tool = provenance.get("last_mutated_by_tool", {})
+    if last_tool and runtime_identity_changed(last_tool, current_tool):
+        health_warnings.append(
+            "Loaded workflow tool identity differs from the last recorded mutator; run doctor."
+        )
     if (
         recorded_context.get("git_branch")
         and current_context.get("git_branch")
@@ -1041,32 +1473,51 @@ def overview_payload(root: Path, state: dict[str, Any]) -> dict[str, Any]:
             f"Git branch changed from {recorded_context['git_branch']} to "
             f"{current_context['git_branch']}; confirm this workflow belongs on the current branch."
         )
-    pointer = active_pointer(root)
-    if workflow["status"] in {"active", "paused"} and not pointer.exists():
-        health_warnings.append("Active workflow pointer is missing; use --id until it is restored.")
-    next_stage = None if missing else next_stage_name(state)
+    pointer_health, pointer_owner = active_pointer_health(root, state)
+    if status in LIVE_POINTER_STATUSES and pointer_health != "current":
+        missing.append(f"workflow:pointer_{pointer_health}")
+        if pointer_health == "owned_by_other":
+            health_warnings.append(f"Active pointer belongs to workflow {pointer_owner}.")
+        else:
+            health_warnings.append("Active workflow pointer is missing, stale, or invalid; use activate to restore it.")
+    lifecycle_actions = {
+        "paused": "Resume this workflow before continuing.",
+        "inactive": "Activate this workflow before continuing.",
+        "completed": "No next workflow action is required.",
+        "abandoned": "This workflow was abandoned; reopen it explicitly to continue.",
+    }
+    if status != "active":
+        missing = [] if status == "completed" else [f"workflow:{status}"]
+        notes = [] if status == "completed" else [lifecycle_actions[status]]
+    next_stage = next_stage_name(state) if status == "active" and not missing else None
+    if status in lifecycle_actions:
+        next_action = lifecycle_actions[status]
+    elif pointer_health != "current":
+        next_action = "Restore this workflow's active pointer with activate before continuing."
+    elif state.get("escalation", {}).get("status") == "required":
+        escalation = state.get("escalation", {})
+        next_action = (
+            f"Review risk {escalation.get('report_id')} and obtain explicit user approval to escalate "
+            f"from {escalation.get('from_mode')} to at least {escalation.get('recommended_mode')}."
+        )
+    elif next_stage and not missing:
+        next_action = f"Advance to {STAGE_LABELS.get(next_stage, next_stage)}."
+    else:
+        next_action = STAGE_GUIDANCE.get(stage, "Continue the current workflow stage.")
     return {
         "workflow_id": workflow["id"],
         "title": workflow["title"],
         "mode": workflow["mode"],
-        "status": workflow["status"],
+        "status": status,
         "stage": stage,
         "stage_label": STAGE_LABELS.get(stage, stage),
-        "can_advance": workflow["status"] == "active" and not missing,
+        "can_advance": status == "active" and pointer_health == "current" and not missing,
         "next_stage": next_stage,
         "next_stage_label": STAGE_LABELS.get(next_stage, next_stage) if next_stage else None,
-        "next_action": (
-            f"Review risk {state.get('escalation', {}).get('report_id')} and obtain explicit user approval to escalate from "
-            f"{state.get('escalation', {}).get('from_mode')} to at least {state.get('escalation', {}).get('recommended_mode')}."
-            if state.get("escalation", {}).get("status") == "required"
-            else (
-                f"Advance to {STAGE_LABELS.get(next_stage, next_stage)}."
-                if next_stage and not missing
-                else STAGE_GUIDANCE.get(stage, "Continue the current workflow stage.")
-            )
-        ),
+        "next_action": next_action,
         "missing": missing,
         "notes": notes,
+        "stage_missing_after_resume": stage_missing,
         "completed_artifacts": completed_artifacts(root, state),
         "outstanding_issues": [
             {
@@ -1078,7 +1529,8 @@ def overview_payload(root: Path, state: dict[str, Any]) -> dict[str, Any]:
             }
             for issue in outstanding_issues(state)
         ],
-        "meeting_notes": len(state.get("meetings", [])),
+        "meeting_notes": sum(1 for item in state.get("meetings", []) if item.get("status") == "current"),
+        "meeting_notes_total": len(state.get("meetings", [])),
         "state_revision": state["revision"],
         "human_approval_gates": state.get("human_approval_policy", {}).get("required_gates", []),
         "risk_recommendation": state.get("risk_assessment", {}).get("recommended_mode"),
@@ -1086,6 +1538,10 @@ def overview_payload(root: Path, state: dict[str, Any]) -> dict[str, Any]:
         "escalation": state.get("escalation", {"status": "none"}),
         "execution_policy": EXECUTION_POLICIES[workflow["mode"]],
         "health_warnings": health_warnings,
+        "pointer_health": pointer_health,
+        "pause_reason": workflow.get("pause_reason"),
+        "runtime_provenance": provenance,
+        "current_tool_identity": current_tool,
     }
 
 
@@ -1097,6 +1553,15 @@ def print_overview(payload: dict[str, Any]) -> None:
     )
     print(f"Can advance: {'yes' if payload['can_advance'] else 'no'}")
     print(f"Next action: {payload['next_action']}")
+    last_tool = payload.get("runtime_provenance", {}).get("last_mutated_by_tool", {})
+    if last_tool:
+        print(
+            "Last mutated by tool: "
+            f"{last_tool.get('plugin_name')} {last_tool.get('version')} "
+            f"payload={last_tool.get('payload_sha256')}"
+        )
+    else:
+        print("Last mutated by tool: unavailable (legacy workflow state)")
     if payload["completed_artifacts"]:
         print("Completed artifacts: " + ", ".join(payload["completed_artifacts"]))
     else:
@@ -1149,6 +1614,8 @@ def print_overview(payload: dict[str, Any]) -> None:
 
 def save_state(path: Path, state: dict[str, Any]) -> None:
     expected_revision = state.get("revision", 0)
+    runtime_report = require_mutation_runtime_health(state)
+    tool_identity = {key: runtime_report["runtime"].get(key) for key in TOOL_IDENTITY_FIELDS}
     if path.exists():
         on_disk = load_data(path)
         actual_revision = on_disk.get("revision", 0)
@@ -1159,11 +1626,22 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
             )
         verify_state_checksum(on_disk, path, CURRENT_SCHEMA_VERSION)
         save_data(path.with_name("state.backup.yaml"), on_disk)
+    provenance = state.setdefault("runtime_provenance", {})
+    provenance.setdefault("created_by_tool", tool_identity)
+    provenance["last_mutated_by_tool"] = tool_identity
     state["schema_version"] = CURRENT_SCHEMA_VERSION
     state["revision"] = expected_revision + 1
     state["state_checksum"] = state_checksum(state)
     validate_state(state, path)
     save_data(path, state)
+    if path.name == "state.yaml" and path.parent.parent.name == ".ai-workflow":
+        root = path.parents[2]
+        pointer = active_pointer(root)
+        if pointer.exists() and load_data(pointer).get("workflow_id") == state["workflow"]["id"]:
+            if state["workflow"]["status"] in LIVE_POINTER_STATUSES:
+                claim_active_pointer(root, path, state)
+            else:
+                release_active_pointer(root, state["workflow"]["id"])
 
 
 def repository_evidence_path(
@@ -1194,6 +1672,39 @@ def repository_evidence_path(
 
 def content_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def current_tool_identity(runtime_root: Path | str | None = None) -> dict[str, Any]:
+    """Return the immutable identity fields of the workflow tool executing now."""
+    try:
+        observed = inspect_runtime(runtime_root or default_plugin_root())
+    except ProvenanceError as exc:
+        raise WorkflowError(f"Unable to identify the workflow runtime: {exc}") from exc
+    return {key: observed.get(key) for key in TOOL_IDENTITY_FIELDS}
+
+
+LOADED_TOOL_IDENTITY = current_tool_identity()
+
+
+def runtime_identity_changed(recorded: dict[str, Any], current: dict[str, Any]) -> bool:
+    return any(
+        recorded.get(field) != current.get(field)
+        for field in ("plugin_name", "version", "entry_path", "entry_sha256", "payload_sha256")
+    )
+
+
+def require_mutation_runtime_health(state: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Fail closed before any command is permitted to write workflow state."""
+    try:
+        return require_mutation_runtime(
+            default_plugin_root(),
+            recorded_identity=(state or {}).get("runtime_provenance", {}).get(
+                "last_mutated_by_tool", {}
+            ),
+            loaded_identity=LOADED_TOOL_IDENTITY,
+        )
+    except ProvenanceError as exc:
+        raise WorkflowError(f"Runtime provenance audit failed: {exc}") from exc
 
 
 def require_markdown_structure(path: Path) -> None:
@@ -1241,100 +1752,20 @@ def require_artifact_content(name: str, path: Path) -> None:
             raise WorkflowError("User feedback evidence must record explicit user approval.")
 
 
+def cmd_version(args: argparse.Namespace) -> int:
+    return invoke_lifecycle_command("cmd_version", sys.modules[__name__], args)
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    return invoke_lifecycle_command("cmd_doctor", sys.modules[__name__], args)
+
+
 def cmd_init(args: argparse.Namespace) -> None:
-    root = repository_root(args.root)
-    pointer = active_pointer(root)
-    if pointer.exists() and not args.force:
-        active = load_data(pointer).get("workflow_id", "unknown")
-        raise WorkflowError(f"Workflow {active} is already active. Complete it or use --force.")
-
-    workflow_id = args.id or workflow_id_from_title(args.title)
-    validate_workflow_id(workflow_id)
-    path = state_path(root, workflow_id)
-    if path.exists() and not args.force:
-        raise WorkflowError(f"Workflow already exists: {workflow_id}")
-
-    docs_dir = root / "docs" / "requirements" / workflow_id
-    docs_dir.mkdir(parents=True, exist_ok=True)
-    request_path = docs_dir / "00-original-request.md"
-    atomic_write_text(
-        request_path,
-        f"# Original request: {args.title}\n\n{args.request.strip()}\n",
-    )
-    timestamp = now()
-    state: dict[str, Any] = {
-        "schema_version": CURRENT_SCHEMA_VERSION,
-        "revision": 0,
-        "workflow": {
-            "id": workflow_id,
-            "title": args.title,
-            "mode": args.mode,
-            "requested_mode": args.mode,
-            "flow_stages": list(FLOWS[args.mode]),
-            "status": "active",
-            "current_stage": FLOWS[args.mode][0],
-            "created_at": timestamp,
-            "updated_at": timestamp,
-        },
-        "artifacts": {
-            "original_request": {
-                "path": str(request_path.relative_to(root)),
-                "status": "ready",
-                "evidence_sha256": content_sha256(request_path),
-                "updated_at": timestamp,
-                "notes": "Captured during workflow initialization.",
-            }
-        },
-        "issues": [],
-        "decisions": {},
-        "human_approval_policy": {
-            "required_gates": list(dict.fromkeys(args.require_human_approval or []))
-        },
-        "human_approvals": {},
-        "meetings": [],
-        "risk_assessment": {"status": "pending"},
-        "user_feedback_records": [],
-        "delivery_confirmation_records": [],
-        "risk_reports": [],
-        "escalation": {"status": "none"},
-        "core_goals": {},
-        "scope_changes": [],
-        "acceptance_criteria": {},
-        "criterion_verdicts": {},
-        "core_outcomes": {},
-        "source_revision": {},
-        "verification_snapshot": {},
-        "journey_validation": {},
-        "repository_context": repository_context(root),
-        "history": [
-            {"at": timestamp, "event": "initialized", "detail": f"Started {args.mode} workflow"}
-        ],
-    }
-    if args.force and path.exists():
-        state["revision"] = int(load_data(path).get("revision", 0))
-    save_state(path, state)
-    save_data(
-        pointer,
-        {
-            "workflow_id": workflow_id,
-            "state_path": str(path.relative_to(root)),
-            "updated_at": timestamp,
-        },
-    )
-    print(f"Initialized {workflow_id} in {args.mode} mode")
-    print(f"State: {path.relative_to(root)}")
-    print(f"Artifacts: {docs_dir.relative_to(root)}")
+    invoke_lifecycle_command("cmd_init", sys.modules[__name__], args)
 
 
 def cmd_start(args: argparse.Namespace) -> None:
-    if not getattr(args, "title", None):
-        args.title = title_from_request(args.request)
-    cmd_init(args)
-    root = repository_root(args.root)
-    _, state = load_state(root, getattr(args, "id", None))
-    print()
-    print("Overview:")
-    print_overview(overview_payload(root, state))
+    invoke_lifecycle_command("cmd_start", sys.modules[__name__], args)
 
 
 def cmd_assess_risk(args: argparse.Namespace) -> None:
@@ -1362,173 +1793,75 @@ def cmd_escalate_mode(args: argparse.Namespace) -> None:
 
 
 def cmd_status(args: argparse.Namespace) -> None:
-    root = repository_root(args.root)
-    _, state = load_state(root, args.id)
-    if args.json:
-        print(json.dumps(state, indent=2, ensure_ascii=False))
-        return
-    workflow = state["workflow"]
-    blockers = open_blockers(state)
-    print(f"Workflow: {workflow['id']} — {workflow['title']}")
-    print(f"Mode: {workflow['mode']}  Status: {workflow['status']}  Stage: {workflow['current_stage']}")
-    print(f"Artifacts satisfied: {sum(artifact_ready(root, state, name) for name in ARTIFACTS)}")
-    print(f"Meeting notes: {len(state.get('meetings', []))}")
-    print(f"Open blockers: {len(blockers)}")
-    print(f"State revision: {state['revision']}")
-    required_human = state.get("human_approval_policy", {}).get("required_gates", [])
-    print("Human approval gates: " + (",".join(required_human) if required_human else "none"))
-    missing, notes = stage_requirements(root, state)
-    print("Can advance: " + ("yes" if not missing and workflow["status"] == "active" else "no"))
-    for item in missing:
-        print(f"- {item}")
-    for item in notes:
-        print(f"- note:{item}")
+    invoke_lifecycle_command("cmd_status", sys.modules[__name__], args)
 
 
 def cmd_audit_state(args: argparse.Namespace) -> None:
-    root = repository_root(args.root)
-    path = state_path(root, args.id)
-    parse_error = ""
-    try:
-        raw = load_data(path)
-    except WorkflowError as exc:
-        raw = {}
-        parse_error = str(exc)
-    expected = raw.get("state_checksum")
-    actual = state_checksum(raw) if raw else None
-    checksum_valid = (
-        bool(raw)
-        and (raw.get("schema_version") != CURRENT_SCHEMA_VERSION or expected == actual)
-    )
-    backup_path = path.with_name("state.backup.yaml")
-    backup_valid = False
-    backup_revision: int | None = None
-    if backup_path.exists():
-        try:
-            backup = load_data(backup_path)
-            verify_state_checksum(backup, backup_path, CURRENT_SCHEMA_VERSION)
-            validate_state(backup, backup_path)
-            backup_valid = True
-            backup_revision = int(backup.get("revision", 0))
-        except (WorkflowError, ValueError, TypeError):
-            backup_valid = False
-    payload = {
-        "path": str(path.relative_to(root)),
-        "parse_error": parse_error or None,
-        "schema_version": raw.get("schema_version"),
-        "revision": raw.get("revision"),
-        "checksum_valid": checksum_valid,
-        "expected_checksum": expected,
-        "actual_checksum": actual,
-        "backup_path": str(backup_path.relative_to(root)),
-        "backup_exists": backup_path.exists(),
-        "backup_valid": backup_valid,
-        "backup_revision": backup_revision,
-        "repair_available": backup_valid,
-    }
-    if args.json:
-        print(json.dumps(payload, indent=2, ensure_ascii=False))
-        return
-    print(f"State: {payload['path']}")
-    if parse_error:
-        print(f"Parse error: {parse_error}")
-    print(f"Checksum: {'valid' if checksum_valid else 'INVALID'}")
-    print(
-        "Backup: "
-        + (
-            f"valid revision {backup_revision}"
-            if backup_valid
-            else ("invalid" if backup_path.exists() else "not available yet")
-        )
-    )
-    if not checksum_valid and backup_valid:
-        print("Recovery: run repair-state --from-backup --confirm RESTORE")
+    invoke_lifecycle_command("cmd_audit_state", sys.modules[__name__], args)
 
 
 def cmd_repair_state(args: argparse.Namespace) -> None:
-    if args.confirm != "RESTORE":
-        raise WorkflowError("State repair requires --confirm RESTORE.")
-    root = repository_root(args.root)
-    path = state_path(root, args.id)
-    backup_path = path.with_name("state.backup.yaml")
-    backup = load_data(backup_path)
-    verify_state_checksum(backup, backup_path, CURRENT_SCHEMA_VERSION)
-    validate_state(backup, backup_path)
-    try:
-        current_revision = int(load_data(path).get("revision", 0))
-    except (WorkflowError, ValueError, TypeError):
-        current_revision = int(backup.get("revision", 0))
-    restored = json.loads(json.dumps(backup))
-    restored["revision"] = max(current_revision, int(backup.get("revision", 0))) + 1
-    add_history(restored, "state_restored", f"Restored from {backup_path.name}")
-    restored["state_checksum"] = state_checksum(restored)
-    validate_state(restored, path)
-    save_data(path, restored)
-    print(f"Restored workflow state from {backup_path.name}")
+    invoke_lifecycle_command("cmd_repair_state", sys.modules[__name__], args)
 
 
 def cmd_overview(args: argparse.Namespace) -> None:
-    root = repository_root(args.root)
-    _, state = load_state(root, args.id)
-    payload = overview_payload(root, state)
-    if args.json:
-        print(json.dumps(payload, indent=2, ensure_ascii=False))
-        return
-    print_overview(payload)
+    invoke_lifecycle_command("cmd_overview", sys.modules[__name__], args)
 
 
 def cmd_pause(args: argparse.Namespace) -> None:
-    root = repository_root(args.root)
-    path, state = load_state(root, args.id)
-    workflow = state["workflow"]
-    if workflow["status"] != "active":
-        raise WorkflowError(f"Workflow status is {workflow['status']}, not active.")
-    workflow["status"] = "paused"
-    workflow["paused_at"] = now()
-    workflow["pause_reason"] = args.reason.strip()
-    add_history(state, "paused", args.reason.strip())
-    save_state(path, state)
-    print(f"Paused workflow {workflow['id']} at {workflow['current_stage']}")
+    invoke_lifecycle_command("cmd_pause", sys.modules[__name__], args)
 
 
 def cmd_resume(args: argparse.Namespace) -> None:
-    root = repository_root(args.root)
-    path, state = load_state(root, args.id)
-    workflow = state["workflow"]
-    if workflow["status"] != "paused":
-        raise WorkflowError(f"Workflow status is {workflow['status']}, not paused.")
-    workflow["status"] = "active"
-    workflow.pop("paused_at", None)
-    workflow.pop("pause_reason", None)
-    add_history(state, "resumed", f"Resumed at {workflow['current_stage']}")
-    save_state(path, state)
-    print(f"Resumed workflow {workflow['id']} at {workflow['current_stage']}")
+    invoke_lifecycle_command("cmd_resume", sys.modules[__name__], args)
+
+
+def cmd_activate(args: argparse.Namespace) -> None:
+    invoke_lifecycle_command("cmd_activate", sys.modules[__name__], args)
+
+
+def cmd_deactivate(args: argparse.Namespace) -> None:
+    invoke_lifecycle_command("cmd_deactivate", sys.modules[__name__], args)
+
+
+def cmd_abandon(args: argparse.Namespace) -> None:
+    invoke_lifecycle_command("cmd_abandon", sys.modules[__name__], args)
+
+
+def cmd_list(args: argparse.Namespace) -> None:
+    invoke_lifecycle_command("cmd_list", sys.modules[__name__], args)
 
 
 def cmd_next(args: argparse.Namespace) -> None:
-    root = repository_root(args.root)
-    _, state = load_state(root, args.id)
-    workflow = state["workflow"]
-    stage = workflow["current_stage"]
-    if stage == "completed":
-        print("Workflow is complete. No next action.")
-        return
-    missing, notes = stage_requirements(root, state)
-    print(f"Current stage: {stage}")
-    if missing:
-        print("Required before advancing:")
-        for item in missing:
-            print(f"- {item}")
-    else:
-        stages = workflow_stages(state)
-        next_stage = stages[stages.index(stage) + 1]
-        print(f"Ready to advance to: {next_stage}")
-    for item in notes:
-        print(f"Note: {item}")
+    invoke_lifecycle_command("cmd_next", sys.modules[__name__], args)
 
 
 def cmd_record_core_goals(args: argparse.Namespace) -> None:
     invoke_assurance_command("cmd_record_core_goals", sys.modules[__name__], args)
+
+
+def cmd_begin_work(args: argparse.Namespace) -> None:
+    invoke_work_command("cmd_begin_work", sys.modules[__name__], args)
+
+
+def cmd_heartbeat_work(args: argparse.Namespace) -> None:
+    invoke_work_command("cmd_heartbeat_work", sys.modules[__name__], args)
+
+
+def cmd_complete_work(args: argparse.Namespace) -> None:
+    invoke_work_command("cmd_complete_work", sys.modules[__name__], args)
+
+
+def cmd_cancel_work(args: argparse.Namespace) -> None:
+    invoke_work_command("cmd_cancel_work", sys.modules[__name__], args)
+
+
+def cmd_timeout_work(args: argparse.Namespace) -> None:
+    invoke_work_command("cmd_timeout_work", sys.modules[__name__], args)
+
+
+def cmd_fail_work(args: argparse.Namespace) -> None:
+    invoke_work_command("cmd_fail_work", sys.modules[__name__], args)
 
 
 def cmd_register_acceptance_criteria(args: argparse.Namespace) -> None:
@@ -1560,138 +1893,11 @@ def cmd_record_core_outcome(args: argparse.Namespace) -> None:
 
 
 def cmd_record_artifact(args: argparse.Namespace) -> None:
-    root = repository_root(args.root)
-    path, state = load_state(root, args.id)
-    if args.status == "not_applicable" and args.name not in NOT_APPLICABLE_ALLOWED:
-        raise WorkflowError(f"Artifact {args.name} cannot be marked not_applicable.")
-    if args.status == "not_applicable" and not (args.notes or "").strip():
-        raise WorkflowError("A not_applicable artifact requires a justification in --notes.")
-    minimum = MIN_DOCUMENT_CHARS if args.name in DOCUMENT_ARTIFACTS and args.status == "ready" else 0
-    absolute, relative = repository_evidence_path(root, args.path, minimum_chars=minimum)
-    if args.name in DOCUMENT_ARTIFACTS and args.status == "ready":
-        require_markdown_structure(absolute)
-        require_artifact_content(args.name, absolute)
-    for other_name, other in state.get("artifacts", {}).items():
-        if other_name != args.name and other.get("path") == str(relative) and other.get("status") != "superseded":
-            raise WorkflowError(f"Artifact path is already used by {other_name}: {relative}")
-    previous = state.get("artifacts", {}).get(args.name, {})
-    next_hash = content_sha256(absolute) if args.status == "ready" else None
-    verification_binding: dict[str, Any] | None = None
-    verification_execution: dict[str, Any] | None = None
-    if (
-        args.name == "verification_report"
-        and args.status == "ready"
-        and state["workflow"]["mode"] != "strict"
-    ):
-        if state["workflow"]["current_stage"] != "verification":
-            raise WorkflowError("A verification report can only be recorded during verification.")
-        if not (args.test_command or "").strip():
-            raise WorkflowError(
-                "A non-strict verification report requires --test-command so passing evidence "
-                "is backed by an actual deterministic run."
-            )
-        prior_snapshot = state.get("verification_snapshot", {})
-        ignored_paths = tuple(prior_snapshot.get("ignored_paths", []))
-        if not ignored_paths:
-            original_request = state.get("artifacts", {}).get("original_request", {}).get("path", "")
-            if original_request:
-                ignored_paths = (Path(str(original_request)).parent.as_posix(),)
-        try:
-            before_execution = workspace_binding(root, ignored_paths)
-        except SourcePolicyError as exc:
-            raise WorkflowError(str(exc)) from exc
-        verification_execution = execute_verification_commands(
-            root,
-            state,
-            tuple(
-                (label, command)
-                for label, command in (
-                    ("build_or_smoke", args.build_command or ""),
-                    ("test", args.test_command or ""),
-                )
-                if command.strip()
-            ),
-            args.command_timeout,
-            ignored_paths=ignored_paths,
-        )
-        try:
-            verification_binding = workspace_binding(root, ignored_paths)
-        except SourcePolicyError as exc:
-            raise WorkflowError(str(exc)) from exc
-        if before_execution["source_tree_sha256"] != verification_binding["source_tree_sha256"]:
-            raise WorkflowError(
-                "Verification commands changed product files. Exclude genuine generated output "
-                "through repository ignore rules, or restore source and rerun."
-            )
-    changed = bool(previous) and (
-        previous.get("path") != str(relative)
-        or previous.get("status") != args.status
-        or previous.get("evidence_sha256") != next_hash
-        or previous.get("notes", "") != (args.notes or "")
-    )
-    if changed and args.name in {"requirement_confirmation", "core_goals"}:
-        state["core_goals"] = {}
-        state["core_outcomes"] = {}
-        state["scope_changes"] = []
-    if changed and args.name == "prd":
-        state["acceptance_criteria"] = {}
-        state["criterion_verdicts"] = {}
-    if changed and args.name in {"implementation", "verification_report", "journey_report"}:
-        state["source_revision"] = {}
-        state["criterion_verdicts"] = {}
-        state["core_outcomes"] = {}
-        state["journey_validation"] = {}
-    state.setdefault("artifacts", {})[args.name] = {
-        "path": str(relative),
-        "status": args.status,
-        "evidence_sha256": next_hash,
-        "updated_at": now(),
-        "notes": args.notes or "",
-    }
-    if verification_binding is not None:
-        state["verification_snapshot"] = {
-            **verification_binding,
-            "verification_evidence_sha256": next_hash,
-            "test_execution": verification_execution,
-            "recorded_at": now(),
-        }
-    invalidated: list[str] = []
-    invalidated_meetings: list[str] = []
-    automatic_rewind = ""
-    if changed and args.name in ARTIFACT_CHANGE_STAGE:
-        affected_stage = ARTIFACT_CHANGE_STAGE[args.name]
-        stages = workflow_stages(state)
-        if stages.index(state["workflow"]["current_stage"]) >= stages.index(affected_stage):
-            old_stage, invalidated_artifacts, invalidated_meetings = rewind_workflow(
-                state,
-                affected_stage,
-                f"Artifact {args.name} changed",
-                preserve_artifacts={args.name},
-            )
-            automatic_rewind = f"{old_stage}->{affected_stage}"
-            if invalidated_artifacts:
-                add_history(state, "artifacts_invalidated", ",".join(invalidated_artifacts))
-    else:
-        for gate in ARTIFACT_INVALIDATES_GATES.get(args.name, ()):
-            if gate in state.get("decisions", {}):
-                del state["decisions"][gate]
-                invalidated.append(gate)
-        invalidated_meetings = invalidate_gate_meetings(
-            state,
-            tuple(ARTIFACT_INVALIDATES_GATES.get(args.name, ())),
-            f"Artifact {args.name} changed",
-        )
-    add_history(state, "artifact_recorded", f"{args.name}={args.status}:{relative}")
-    if automatic_rewind:
-        add_history(state, "change_control_required", f"{args.name}:{automatic_rewind}")
-    if invalidated:
-        add_history(state, "decisions_invalidated", f"{args.name}:{','.join(invalidated)}")
-    if invalidated_meetings:
-        add_history(state, "meetings_invalidated", ",".join(invalidated_meetings))
-    save_state(path, state)
-    print(f"Recorded artifact {args.name} ({args.status}): {relative}")
-    if automatic_rewind:
-        print(f"Change detected; workflow automatically rewound: {automatic_rewind}")
+    invoke_artifact_command("cmd_record_artifact", sys.modules[__name__], args)
+
+
+def cmd_record_artifact_bundle(args: argparse.Namespace) -> None:
+    invoke_artifact_command("cmd_record_artifact_bundle", sys.modules[__name__], args)
 
 
 def cmd_record_user_feedback(args: argparse.Namespace) -> None:
@@ -1740,57 +1946,11 @@ def cmd_record_human_approval(args: argparse.Namespace) -> None:
 
 
 def cmd_advance(args: argparse.Namespace) -> None:
-    root = repository_root(args.root)
-    path, state = load_state(root, args.id)
-    workflow = state["workflow"]
-    if workflow["status"] != "active":
-        raise WorkflowError(f"Workflow status is {workflow['status']}, not active.")
-    stage = workflow["current_stage"]
-    if stage == "completed":
-        raise WorkflowError("Workflow is already complete.")
-    missing, notes = stage_requirements(root, state)
-    if missing:
-        detail = ", ".join(missing)
-        if notes:
-            detail += "; " + "; ".join(notes)
-        raise WorkflowError(f"Gate blocked: {detail}")
-    stages = workflow_stages(state)
-    new_stage = stages[stages.index(stage) + 1]
-    workflow["current_stage"] = new_stage
-    if new_stage == "completed":
-        workflow["status"] = "completed"
-    add_history(state, "advanced", f"{stage}->{new_stage}")
-    save_state(path, state)
-    if new_stage == "completed":
-        pointer = active_pointer(root)
-        if pointer.exists():
-            active = load_data(pointer)
-            if active.get("workflow_id") == workflow["id"]:
-                pointer.unlink()
-    print(f"Advanced {stage} -> {new_stage}")
+    invoke_lifecycle_command("cmd_advance", sys.modules[__name__], args)
 
 
 def cmd_reopen(args: argparse.Namespace) -> None:
-    root = repository_root(args.root)
-    path, state = load_state(root, args.id)
-    old_stage, invalidated_artifacts, invalidated_meetings = rewind_workflow(
-        state, args.stage, f"Workflow reopened at {args.stage}"
-    )
-    add_history(state, "reopened", f"{old_stage}->{args.stage}:{args.reason}")
-    if invalidated_artifacts:
-        add_history(state, "artifacts_invalidated", ",".join(invalidated_artifacts))
-    if invalidated_meetings:
-        add_history(state, "meetings_invalidated", ",".join(invalidated_meetings))
-    save_state(path, state)
-    save_data(
-        active_pointer(root),
-        {
-            "workflow_id": state["workflow"]["id"],
-            "state_path": str(path.relative_to(root)),
-            "updated_at": now(),
-        },
-    )
-    print(f"Reopened workflow at {args.stage}")
+    invoke_lifecycle_command("cmd_reopen", sys.modules[__name__], args)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1804,16 +1964,29 @@ def main() -> int:
         if args.command in MUTATING_COMMANDS:
             root = repository_root(args.root)
             with workflow_lock(root):
-                if args.command not in {"init", "start", "repair-state", "resume"}:
-                    _, current = load_state(root, args.id)
-                    if current["workflow"]["status"] == "paused":
+                current: dict[str, Any] | None = None
+                if args.command not in LIFECYCLE_MUTATION_COMMANDS:
+                    _, current = require_active_workflow_owner(root, args.id)
+                    status = current["workflow"]["status"]
+                    if status == "paused":
                         raise WorkflowError(
                             "Workflow is paused. Resume it before recording or changing delivery state."
                         )
-                args.func(args)
+                    if status in TERMINAL_WORKFLOW_STATUSES:
+                        raise WorkflowError(
+                            f"The {status} workflow is immutable. Use reopen for a new delivery iteration."
+                        )
+                    if status == "inactive":
+                        raise WorkflowError(
+                            "Workflow is inactive. Activate it before recording or changing delivery state."
+                        )
+                elif args.command not in {"init", "start", "repair-state"}:
+                    _, current = load_state(root, args.id)
+                require_mutation_runtime_health(current)
+                result = args.func(args)
         else:
-            args.func(args)
-        return 0
+            result = args.func(args)
+        return int(result or 0)
     except WorkflowError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
