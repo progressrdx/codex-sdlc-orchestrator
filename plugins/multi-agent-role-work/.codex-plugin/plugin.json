@@ -1,7 +1,7 @@
 {
   "name": "multi-agent-role-work",
-  "version": "2.6.0+codex.20260810134933",
-  "description": "Cost-aware formal multi-role delivery with executable verification, explicit routing, and user approval without lifecycle hooks.",
+  "version": "2.7.0+codex.20260820130637",
+  "description": "An AI project manager with a simple project view backed by a rigorous multi-role delivery engine.",
   "author": {
     "name": "progressrdx",
     "url": "https://github.com/progressrdx"
@@ -9,6 +9,8 @@
   "homepage": "https://github.com/progressrdx/multi-agent-role-work#readme",
   "repository": "https://github.com/progressrdx/multi-agent-role-work",
   "keywords": [
+    "ai-project-manager",
+    "project-memory",
     "sdlc",
     "multi-agent",
     "product",
@@ -17,13 +19,14 @@
   ],
   "skills": "./skills/",
   "interface": {
-    "displayName": "Multi-Role SDLC",
-    "shortDescription": "Risk-adaptive product, engineering, and testing workflow.",
-    "longDescription": "Start with an actionable Team Development request in any project; no workflow command knowledge is required. The orchestrator opens discovery rather than coding, performs evidence-backed requirement and risk triage, selects the lowest safe micro, quick, standard, or strict flow, persists each delegated role attempt and its content-addressed outputs, atomically records complete role-gate reviews and strict verification bundles, executes checks against one immutable delivery candidate, supports explicit impact-scoped change control, requires profile-appropriate final-user-journey checks and final user approval, and preserves recoverable checksummed state with runtime provenance and deterministic lifecycle recovery.",
+    "displayName": "AI Project Manager",
+    "shortDescription": "Keeps your project moving without losing sight of the goal.",
+    "longDescription": "Start with an actionable Team Development request and get a simple project view centered on the goal, current focus, recent results, quality, and decisions that genuinely need you. Underneath, the existing multi-role engine still performs evidence-backed scope and risk analysis, independent implementation and testing, change-impact control, immutable delivery verification, and recoverable persistent state. Advanced workflow diagnostics remain available without being exposed in the default user experience.",
     "developerName": "progressrdx",
     "category": "Productivity",
     "capabilities": [
       "Multi-agent coordination",
+      "User-friendly project view",
       "Atomic persistent workflow",
       "Human review gates",
       "Risk-based mode escalation",
@@ -47,8 +50,8 @@
     ],
     "defaultPrompt": [
       "\u56e2\u961f\u5f00\u53d1\uff1a\u63cf\u8ff0\u4f60\u7684\u9700\u6c42\u3002\u6211\u4f1a\u5148\u68c0\u67e5\u9700\u6c42\u7f3a\u53e3\u548c\u98ce\u9669\uff0c\u4e0d\u4f1a\u76f4\u63a5\u5f00\u59cb\u7f16\u7801\u3002",
-      "\u7ee7\u7eed\u5f53\u524d\u6b63\u5f0f\u7814\u53d1\u6d41\u7a0b\u3002",
-      "\u67e5\u770b\u5f53\u524d\u7814\u53d1\u6d41\u7a0b\u72b6\u6001\u548c\u963b\u585e\u9879\u3002"
+      "\u7ee7\u7eed\u63a8\u8fdb\u5f53\u524d\u56e2\u961f\u5f00\u53d1\u9879\u76ee\u3002",
+      "\u67e5\u770b\u5f53\u524d\u9879\u76ee\u76ee\u6807\u3001\u8fdb\u5c55\u3001\u8d28\u91cf\u548c\u9700\u8981\u6211\u51b3\u5b9a\u7684\u4e8b\u9879\u3002"
     ]
   }
 }

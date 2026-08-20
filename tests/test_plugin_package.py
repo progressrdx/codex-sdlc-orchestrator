@@ -97,6 +97,25 @@ class PluginPackageTests(unittest.TestCase):
         self.assertIn("bare “继续” is ordinary conversation", contract)
         self.assertIn("$sdlc-orchestrator", agent)
 
+    def test_user_facing_project_view_is_the_default_product_surface(self) -> None:
+        orchestrator = PLUGIN / "skills" / "sdlc-orchestrator"
+        skill = (orchestrator / "SKILL.md").read_text(encoding="utf-8")
+        contract = (orchestrator / "references" / "workflow-contract.md").read_text(
+            encoding="utf-8"
+        )
+        cli = (orchestrator / "scripts" / "workflow_cli.py").read_text(
+            encoding="utf-8"
+        )
+        manifest = json.loads(
+            (PLUGIN / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
+        )
+
+        self.assertEqual("AI Project Manager", manifest["interface"]["displayName"])
+        self.assertIn("User-friendly project view", manifest["interface"]["capabilities"])
+        self.assertIn("overview --json", skill)
+        self.assertIn("Use `project` for user communication", contract)
+        self.assertIn('subparsers.add_parser(\n        "project"', cli)
+
     def test_plugin_does_not_package_lifecycle_hooks(self) -> None:
         self.assertFalse((PLUGIN / "hooks").exists())
         manifest = json.loads(

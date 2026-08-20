@@ -103,7 +103,8 @@ def build_parser(api: Any) -> argparse.ArgumentParser:
     init.set_defaults(func=cmd_init)
 
     start = subparsers.add_parser(
-        "start", help="Start a workflow from a plain-language requirement and print an overview"
+        "start",
+        help="Start from a plain-language requirement and print the user-facing project view",
     )
     start.add_argument(
         "--id",
@@ -145,9 +146,18 @@ def build_parser(api: Any) -> argparse.ArgumentParser:
     repair.add_argument("--confirm", required=True)
     repair.set_defaults(func=cmd_repair_state)
 
-    overview = subparsers.add_parser("overview", help="Show a concise progress report")
+    overview = subparsers.add_parser(
+        "overview", help="Show advanced internal workflow diagnostics"
+    )
     overview.add_argument("--json", action="store_true")
     overview.set_defaults(func=cmd_overview)
+
+    project = subparsers.add_parser(
+        "project",
+        help="Show the user-facing project view without internal workflow terminology",
+    )
+    project.add_argument("--json", action="store_true")
+    project.set_defaults(func=cmd_project)
 
     list_cmd = subparsers.add_parser("list", help="List persisted workflows and pointer ownership")
     list_cmd.add_argument("--json", action="store_true")

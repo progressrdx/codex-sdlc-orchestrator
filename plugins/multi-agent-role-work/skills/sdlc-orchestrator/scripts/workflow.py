@@ -1808,6 +1808,9 @@ def cmd_overview(args: argparse.Namespace) -> None:
     invoke_lifecycle_command("cmd_overview", sys.modules[__name__], args)
 
 
+def cmd_project(args: argparse.Namespace) -> None:  # User-facing read-only facade.
+    invoke_lifecycle_command("cmd_project", sys.modules[__name__], args)
+
 def cmd_pause(args: argparse.Namespace) -> None:
     invoke_lifecycle_command("cmd_pause", sys.modules[__name__], args)
 

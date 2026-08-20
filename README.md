@@ -1,6 +1,6 @@
-# Multi-Role SDLC for Codex
+# AI Project Manager for Codex
 
-An install-once Codex plugin that coordinates product, engineering, and testing roles through a formal software delivery workflow. It keeps persistent state, enforces independent review gates, and records concise cross-role meeting notes.
+An install-once Codex plugin that keeps a project aligned with its goal, advances the work, verifies the result, and asks the user only for meaningful decisions. Its simple project view is backed by the existing persistent, risk-aware multi-role delivery engine.
 
 ## Install once
 
@@ -44,13 +44,36 @@ To inspect or continue:
 
 When you temporarily switch topics, say “暂停当前研发流程”. Pausing preserves all evidence while stopping automatic workflow context and rejecting state changes; “继续当前正式研发流程” resumes at the same stage.
 
-Those progress checks use the workflow `overview`, which summarizes the active stage, whether the gate can advance, missing evidence, open issues, meeting records, and human approval checkpoints.
+Those progress checks use the user-facing `project` view. It shows the current goal, current focus, recent verified results, quality status, and anything that genuinely needs a user decision. Internal stages, modes, gates, role meetings, and cost controls remain available through the advanced `overview` diagnostic command.
 
 Use `继续团队开发` to resume a paused workflow and `查看研发进度` to inspect it. Because the plugin installs no lifecycle hook, a bare “继续” is always ordinary conversation and never routes or resumes a formal workflow.
 
 Clear continuation phrases work only when `.ai-workflow/active.yaml` exists. Without an active workflow, “继续团队开发” or “开始验收” reports that no workflow exists and never creates one.
 
 Ordinary coding, explanation, and isolated-fix requests do not activate the formal workflow.
+
+## What the user sees
+
+The default project update is intentionally compact:
+
+```text
+目标：会员积分在配置的到期日失效
+当前：正在开发已确认的功能
+核心结果：
+- [等待验证] 到期积分不再计入可用余额
+最近完成：
+- 实现方案已完成
+- 质量检查计划已完成
+可查看成果：
+- 查看实现结果：docs/requirements/REQ-points/implementation.md
+质量：最终质量检查尚未完成
+需要你决定：暂无
+下一步：我会继续推进，并在出现可体验结果或需要你判断时更新你。
+```
+
+Core-result states are derived from recorded goals, implementation evidence, verification, and final outcomes—never from a fabricated percentage. When a preview, implementation summary, quality report, journey report, or delivery result exists, the view exposes it as an inspectable action. Resolved problems are summarized separately from remaining risks.
+
+The state machine, exact evidence, assurance mode, role handoffs, and verification bindings are still preserved. They are diagnostics and enforcement mechanisms rather than the default product language.
 
 When compatible external design Skills are installed, the coordinator can add them to a relevant role assignment. Product Design is used only for explicit visual exploration, screenshot-grounded audits, faithful source cloning, or implementation of a selected visual target—not for ordinary frontend work merely because it has a UI. Frontend design guidance and web-interface review Skills remain optional; the bundled product, engineering, and testing roles continue normally when they are unavailable, and the coordinator discloses which specialized pass did not run.
 
@@ -222,5 +245,7 @@ codex plugin remove multi-agent-role-work
 python3 -m unittest discover -s tests -v
 python3 /path/to/plugin-creator/scripts/validate_plugin.py plugins/multi-agent-role-work
 ```
+
+For local diagnostics, `workflow.py overview` exposes the internal workflow state. For the normal user-facing update, use `workflow.py project` or `workflow.py project --json`.
 
 The workflow state tool is a delivery-integrity guard, not an identity or security system. Task/session references improve traceability, while independent role agents and evidence-based reviews provide the practical separation of responsibilities.

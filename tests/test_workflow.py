@@ -107,6 +107,10 @@ class WorkflowToolTests(unittest.TestCase):
         clarification: str | None = None,
         confirmation: str | None = None,
         preview: str | None = None,
+        scope: str = "Deliver the explicitly bounded workflow behavior.",
+        out_of_scope: str = "No unrelated platform or deployment changes.",
+        acceptance: str = "The requested behavior is observable and satisfies the recorded criteria.",
+        verification: str = "Run focused automated checks and independent behavior verification.",
         expected: int = 0,
     ) -> subprocess.CompletedProcess[str]:
         mode = selected_mode or self.workflow_mode
@@ -147,13 +151,13 @@ class WorkflowToolTests(unittest.TestCase):
                 for item in ("--checked-area", area)
             ),
             "--scope",
-            "Deliver the explicitly bounded workflow behavior.",
+            scope,
             "--out-of-scope",
-            "No unrelated platform or deployment changes.",
+            out_of_scope,
             "--acceptance",
-            "The requested behavior is observable and satisfies the recorded criteria.",
+            acceptance,
             "--verification",
-            "Run focused automated checks and independent behavior verification.",
+            verification,
             "--evidence",
             str(risk_evidence.relative_to(self.root)),
             *(item for flag in (risks if risks is not None else default_risks[mode]) for item in ("--risk", flag)),
@@ -480,16 +484,20 @@ class WorkflowToolTests(unittest.TestCase):
         status = self.run_tool("status")
         self.assertIn("Stage: design", status.stdout)
 
-    def test_start_accepts_plain_request_and_prints_overview(self) -> None:
+    def test_start_accepts_plain_request_and_prints_user_project_view(self) -> None:
         started = self.run_tool(
             "start",
             "--request",
             "实现会员积分过期功能。需要产品、研发和测试评审。",
         )
         self.assertIn("Initialized REQ-", started.stdout)
-        self.assertIn("Overview:", started.stdout)
-        self.assertIn("Stage: intake (Intake)", started.stdout)
-        self.assertIn("Next action: Advance to Scope and risk check.", started.stdout)
+        self.assertIn("Project:", started.stdout)
+        self.assertIn("目标：", started.stdout)
+        self.assertIn("当前：正在理解你的目标和项目背景", started.stdout)
+        self.assertIn("需要你决定：暂无", started.stdout)
+        self.assertNotIn("Mode:", started.stdout)
+        self.assertNotIn("Stage:", started.stdout)
+        self.assertNotIn("Can advance:", started.stdout)
 
         overview = self.run_tool("overview", "--json")
         payload = json.loads(overview.stdout)
@@ -497,6 +505,112 @@ class WorkflowToolTests(unittest.TestCase):
         self.assertEqual("intake", payload["stage"])
         self.assertTrue(payload["can_advance"])
         self.assertIn("original_request", payload["completed_artifacts"])
+
+    def test_project_view_uses_plain_language_and_keeps_overview_technical(self) -> None:
+        self.init()
+        self.run_tool("advance")
+        self.assess_risk(
+            scope="Members keep earned points until the configured expiration date.",
+            out_of_scope="No changes to earning rules or membership tiers.",
+            acceptance="Expired points are excluded from the usable balance.",
+        )
+
+        project = self.run_tool("project")
+        self.assertIn(
+            "目标：Members keep earned points until the configured expiration date.",
+            project.stdout,
+        )
+        self.assertIn("暂不包含：No changes to earning rules", project.stdout)
+        self.assertIn("完成标准：Expired points are excluded", project.stdout)
+        self.assertIn("当前：正在梳理范围、验收结果和潜在风险", project.stdout)
+        self.assertIn("质量：最终质量检查尚未完成", project.stdout)
+        self.assertIn("需要你决定：暂无", project.stdout)
+        for internal_term in (
+            "Mode:",
+            "Stage:",
+            "Can advance:",
+            "Meeting notes:",
+            "Cost policy:",
+            "Human approval gates:",
+        ):
+            self.assertNotIn(internal_term, project.stdout)
+
+        project_json = json.loads(self.run_tool("project", "--json").stdout)
+        self.assertEqual(
+            "Members keep earned points until the configured expiration date.",
+            project_json["goal"],
+        )
+        self.assertNotIn("mode", project_json)
+        self.assertNotIn("stage", project_json)
+        self.assertEqual("已定义，等待开发", project_json["core_results"][0]["status"])
+        self.assertEqual([], project_json["available_actions"])
+
+        overview = self.run_tool("overview")
+        self.assertIn("Mode: standard", overview.stdout)
+        self.assertIn("Stage: scope_check", overview.stdout)
+
+    def test_project_view_surfaces_only_the_user_decision(self) -> None:
+        self.init()
+        self.run_tool("advance")
+        self.assess_risk()
+        self.run_tool("advance")
+        self.record_clarification()
+        self.run_tool("advance")
+
+        project = self.run_tool("project")
+        self.assertIn("当前：已整理目标和范围，准备与你确认", project.stdout)
+        self.assertIn("需要你决定：", project.stdout)
+        self.assertIn("请确认我理解的目标、范围和完成标准是否正确。", project.stdout)
+        self.assertIn("下一步：等待你的决定后继续推进。", project.stdout)
+        self.assertNotIn("requirement_confirmation", project.stdout)
+        self.assertNotIn("artifact:", project.stdout)
+
+    def test_project_view_shows_result_status_actions_and_resolved_problems(self) -> None:
+        self.init("micro")
+        self.run_tool("advance")
+        self.assess_risk("micro")
+        self.run_tool("advance")
+        self.record("implementation", "requirements/REQ-test-flow/implementation.md")
+        self.run_tool(
+            "add-issue",
+            "--source",
+            "testing",
+            "--owner",
+            "engineering",
+            "--severity",
+            "minor",
+            "--summary",
+            "Button copy used the old label in one state.",
+        )
+        resolution = self.write_artifact(
+            "requirements/REQ-test-flow/issues/ISSUE-001-resolution.md",
+            "# ISSUE-001 resolution\n\nThe old button label was replaced in the remaining state.\n\n"
+            "## Verification\n\nThe focused rendering check now shows the new label consistently.\n",
+        )
+        self.run_tool(
+            "resolve-issue",
+            "--issue-id",
+            "ISSUE-001",
+            "--resolved-by",
+            "engineering",
+            "--resolution",
+            "Updated the remaining button state and reran the focused check.",
+            "--evidence",
+            str(resolution.relative_to(self.root)),
+        )
+
+        project = self.run_tool("project")
+        self.assertIn("核心结果：", project.stdout)
+        self.assertIn("[等待验证]", project.stdout)
+        self.assertIn("可查看成果：", project.stdout)
+        self.assertIn("查看实现结果：docs/requirements/REQ-test-flow/implementation.md", project.stdout)
+        self.assertIn("已解决问题：", project.stdout)
+        self.assertIn("Button copy used the old label", project.stdout)
+
+        payload = json.loads(self.run_tool("project", "--json").stdout)
+        self.assertEqual("等待验证", payload["core_results"][0]["status"])
+        self.assertEqual("implementation", payload["available_actions"][0]["kind"])
+        self.assertEqual(1, len(payload["resolved_issues"]))
 
     def test_discovery_blocks_formal_work_until_user_confirms_requirements(self) -> None:
         self.init()

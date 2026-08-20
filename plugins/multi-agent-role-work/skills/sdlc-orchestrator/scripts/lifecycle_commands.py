@@ -144,8 +144,8 @@ def cmd_start(args: argparse.Namespace) -> None:
     root = repository_root(args.root)
     _, state = load_state(root, getattr(args, "id", None))
     print()
-    print("Overview:")
-    print_overview(overview_payload(root, state))
+    print("Project:")
+    print_project_view(project_view_payload(root, state))
 
 
 def cmd_status(args: argparse.Namespace) -> None:
@@ -419,6 +419,327 @@ def cmd_overview(args: argparse.Namespace) -> None:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         return
     print_overview(payload)
+
+
+PROJECT_FOCUS = {
+    "intake": "正在理解你的目标和项目背景",
+    "scope_check": "正在梳理范围、验收结果和潜在风险",
+    "clarification": "正在确认会影响最终结果的关键细节",
+    "requirement_confirmation": "已整理目标和范围，准备与你确认",
+    "prd": "正在把目标转化为清晰的产品方案",
+    "prd_review": "正在检查产品方案是否完整、可实现、可验证",
+    "design": "正在制定实现方案和质量检查计划",
+    "readiness_review": "正在做开发前的风险和可执行性检查",
+    "prototype": "正在准备可体验的第一版",
+    "user_feedback": "第一版已可体验，正在等待你的方向判断",
+    "implementation": "正在开发已确认的功能",
+    "verification": "正在运行检查、定位问题并确认核心流程",
+    "acceptance": "正在做交付前的最终质量复核",
+    "delivery_confirmation": "结果已经验证，等待你体验确认",
+    "completed": "本次目标已经完成",
+}
+
+PROJECT_RESULT_LABELS = {
+    "clarification_questions": "关键需求问题已梳理",
+    "requirement_confirmation": "目标和范围已确认",
+    "core_goals": "核心目标已锁定",
+    "prd": "产品方案已完成",
+    "technical_design": "实现方案已完成",
+    "database_design": "数据方案已完成",
+    "test_plan": "质量检查计划已完成",
+    "test_cases": "测试场景已准备",
+    "prototype": "可体验预览已准备",
+    "user_feedback": "预览方向已确认",
+    "implementation": "功能实现已完成",
+    "verification_report": "自动检查已完成",
+    "journey_report": "核心用户流程已验证",
+    "release_plan": "交付方案已完成",
+    "delivery_report": "交付结果已整理",
+    "delivery_confirmation": "交付结果已确认",
+}
+
+PROJECT_ACTION_LABELS = {
+    "prototype": ("查看可体验预览", "preview"),
+    "implementation": ("查看实现结果", "implementation"),
+    "verification_report": ("查看质量报告", "quality_report"),
+    "journey_report": ("查看核心流程验证", "journey_report"),
+    "delivery_report": ("查看交付结果", "delivery_report"),
+}
+
+
+def _project_goal(state: dict[str, Any]) -> str:
+    goals = state.get("core_goals", {})
+    descriptions = [
+        str(item.get("description", "")).strip()
+        for item in goals.values()
+        if isinstance(item, dict) and str(item.get("description", "")).strip()
+    ]
+    if descriptions:
+        return "；".join(descriptions)
+    baseline = state.get("risk_assessment", {}).get("baseline", {})
+    scope = str(baseline.get("scope", "")).strip()
+    return scope or str(state["workflow"]["title"])
+
+
+def _recent_project_results(root: Path, state: dict[str, Any]) -> list[str]:
+    ready = set(completed_artifacts(root, state))
+    candidates: list[tuple[str, str]] = []
+    for name, label in PROJECT_RESULT_LABELS.items():
+        if name not in ready:
+            continue
+        artifact = state.get("artifacts", {}).get(name, {})
+        candidates.append((str(artifact.get("updated_at", "")), label))
+    candidates.sort(reverse=True)
+    return [label for _, label in candidates[:4]]
+
+
+def _core_project_results(root: Path, state: dict[str, Any]) -> list[dict[str, str]]:
+    workflow = state["workflow"]
+    stage = workflow["current_stage"]
+    stages = workflow_stages(state)
+    implementation_ready = artifact_ready(root, state, "implementation")
+    verification_ready = artifact_ready(root, state, "verification_report")
+
+    def pending_status() -> str:
+        if workflow["status"] == "completed":
+            return "已完成"
+        if verification_ready:
+            return "已通过检查，待最终确认"
+        if implementation_ready:
+            return "等待验证"
+        if "implementation" in stages and stages.index(stage) >= stages.index("implementation"):
+            return "开发中"
+        if state.get("risk_assessment", {}).get("status") == "current":
+            return "已定义，等待开发"
+        return "正在定义"
+
+    goals = state.get("core_goals", {})
+    outcomes = state.get("core_outcomes", {})
+    if goals:
+        result: list[dict[str, str]] = []
+        outcome_labels = {
+            "satisfied": "已实现并验证",
+            "deferred": "已延期",
+            "not_applicable": "已调整",
+        }
+        for goal_id, goal in goals.items():
+            verdict = str(outcomes.get(goal_id, {}).get("verdict", ""))
+            result.append(
+                {
+                    "id": str(goal_id),
+                    "description": str(goal.get("description", "")).strip(),
+                    "status": outcome_labels.get(verdict, pending_status()),
+                }
+            )
+        return result
+
+    baseline = state.get("risk_assessment", {}).get("baseline", {})
+    description = str(baseline.get("acceptance", "")).strip() or _project_goal(state)
+    return [{"id": "RESULT-001", "description": description, "status": pending_status()}]
+
+
+def _project_actions(root: Path, state: dict[str, Any]) -> list[dict[str, str]]:
+    actions: list[tuple[str, dict[str, str]]] = []
+    for artifact_name, (label, kind) in PROJECT_ACTION_LABELS.items():
+        if not artifact_ready(root, state, artifact_name):
+            continue
+        artifact = state.get("artifacts", {}).get(artifact_name, {})
+        target = str(artifact.get("path", "")).strip()
+        if not target:
+            continue
+        actions.append(
+            (
+                str(artifact.get("updated_at", "")),
+                {"label": label, "kind": kind, "target": target},
+            )
+        )
+    actions.sort(key=lambda item: item[0], reverse=True)
+    return [action for _, action in actions[:4]]
+
+
+def _resolved_project_issues(state: dict[str, Any]) -> list[dict[str, str]]:
+    resolved: list[tuple[str, dict[str, str]]] = []
+    for issue in state.get("issues", []):
+        if issue.get("status") != "resolved":
+            continue
+        resolved.append(
+            (
+                str(issue.get("resolved_at", "")),
+                {
+                    "problem": str(issue.get("summary", "")).strip(),
+                    "resolution": str(issue.get("resolution", "")).strip(),
+                },
+            )
+        )
+    resolved.sort(key=lambda item: item[0], reverse=True)
+    return [issue for _, issue in resolved[:3]]
+
+
+def _project_decisions(root: Path, state: dict[str, Any]) -> list[str]:
+    workflow = state["workflow"]
+    stage = workflow["current_stage"]
+    decisions: list[str] = []
+    escalation = state.get("escalation", {})
+    if escalation.get("status") == "required":
+        decisions.append("发现了会影响交付可靠性的风险，需要你决定是否提高保障级别。")
+
+    risk = state.get("risk_assessment", {})
+    if stage in {"scope_check", "clarification"}:
+        decisions.extend(
+            str(gap).strip()
+            for gap in risk.get("gaps", [])
+            if str(gap).strip()
+        )
+
+    if stage == "requirement_confirmation" and not artifact_ready(
+        root, state, "requirement_confirmation"
+    ):
+        decisions.append("请确认我理解的目标、范围和完成标准是否正确。")
+    elif stage == "user_feedback" and not artifact_ready(root, state, "user_feedback"):
+        decisions.append("请体验当前预览，并告诉我整体方向是否符合预期。")
+    elif stage == "delivery_confirmation" and not artifact_ready(
+        root, state, "delivery_confirmation"
+    ):
+        decisions.append("请体验已经验证的结果，并确认它是否达到了本次目标。")
+
+    missing, _ = stage_requirements(root, state)
+    if any(item.startswith("human_approval:") for item in missing):
+        decisions.append("当前操作影响较大，需要你的明确授权后才能继续。")
+    decisions.extend(
+        str(issue.get("summary", "")).strip()
+        for issue in outstanding_issues(state)
+        if issue.get("owner") == "user" and str(issue.get("summary", "")).strip()
+    )
+    return list(dict.fromkeys(decisions))
+
+
+def _project_quality(root: Path, state: dict[str, Any]) -> dict[str, Any]:
+    issues = outstanding_issues(state)
+    blockers = [
+        item for item in issues if item.get("severity") in {"blocker", "major"}
+    ]
+    criteria = state.get("acceptance_criteria", {})
+    verdicts = state.get("criterion_verdicts", {})
+    passed = sum(
+        1
+        for criterion_id in criteria
+        if verdicts.get(criterion_id, {}).get("verdict") in {"pass", "not_applicable"}
+    )
+    journey_checks = state.get("journey_validation", {}).get("checks", {})
+    journey_passed = bool(journey_checks) and all(
+        result in {"pass", "not_applicable"} for result in journey_checks.values()
+    )
+    verification_ready = artifact_ready(root, state, "verification_report")
+    if blockers:
+        summary = f"发现 {len(blockers)} 个需要先处理的重要问题"
+    elif journey_passed:
+        summary = "核心用户流程已通过验证"
+    elif verification_ready:
+        summary = "已完成当前版本检查，未发现阻塞交付的问题"
+    else:
+        summary = "最终质量检查尚未完成"
+    details: list[str] = []
+    if criteria:
+        details.append(f"已通过 {passed}/{len(criteria)} 项明确完成标准")
+    if journey_checks:
+        passed_journey_checks = sum(
+            1 for result in journey_checks.values() if result in {"pass", "not_applicable"}
+        )
+        details.append(
+            f"核心流程检查 {passed_journey_checks}/{len(journey_checks)} 项通过"
+        )
+    if blockers:
+        details.append(f"仍有 {len(blockers)} 个重要问题待处理")
+    return {
+        "summary": summary,
+        "details": details,
+        "acceptance_checks_passed": passed,
+        "acceptance_checks_total": len(criteria),
+        "open_important_issues": len(blockers),
+        "core_journey_passed": journey_passed,
+    }
+
+
+def project_view_payload(root: Path, state: dict[str, Any]) -> dict[str, Any]:
+    workflow = state["workflow"]
+    stage = workflow["current_stage"]
+    decisions = _project_decisions(root, state)
+    baseline = state.get("risk_assessment", {}).get("baseline", {})
+    if workflow["status"] == "completed":
+        next_action = "本次目标已完成，可以继续提出调整或新的目标。"
+    elif workflow["status"] == "paused":
+        next_action = "项目已暂停；需要继续时告诉我即可。"
+    elif workflow["status"] == "inactive":
+        next_action = "项目当前未激活；明确告诉我继续这个项目即可恢复。"
+    elif workflow["status"] == "abandoned":
+        next_action = "这个项目已结束；如需恢复，需要明确重新开启。"
+    elif decisions:
+        next_action = "等待你的决定后继续推进。"
+    else:
+        next_action = "我会继续推进，并在出现可体验结果或需要你判断时更新你。"
+    return {
+        "project_id": workflow["id"],
+        "title": workflow["title"],
+        "goal": _project_goal(state),
+        "out_of_scope": str(baseline.get("out_of_scope", "")).strip() or None,
+        "acceptance": str(baseline.get("acceptance", "")).strip() or None,
+        "current_focus": PROJECT_FOCUS.get(stage, "正在推进当前工作"),
+        "core_results": _core_project_results(root, state),
+        "recent_results": _recent_project_results(root, state),
+        "available_actions": _project_actions(root, state),
+        "resolved_issues": _resolved_project_issues(state),
+        "quality": _project_quality(root, state),
+        "needs_your_decision": decisions,
+        "next_action": next_action,
+        "updated_at": workflow.get("updated_at"),
+    }
+
+
+def print_project_view(payload: dict[str, Any]) -> None:
+    print(f"{payload['title']}")
+    print(f"目标：{payload['goal']}")
+    if payload.get("out_of_scope"):
+        print(f"暂不包含：{payload['out_of_scope']}")
+    if payload.get("acceptance"):
+        print(f"完成标准：{payload['acceptance']}")
+    print(f"当前：{payload['current_focus']}")
+    print("核心结果：")
+    for result in payload["core_results"]:
+        print(f"- [{result['status']}] {result['description']}")
+    if payload["recent_results"]:
+        print("最近完成：")
+        for result in payload["recent_results"]:
+            print(f"- {result}")
+    else:
+        print("最近完成：已记录初始目标")
+    if payload["available_actions"]:
+        print("可查看成果：")
+        for action in payload["available_actions"]:
+            print(f"- {action['label']}：{action['target']}")
+    if payload["resolved_issues"]:
+        print("已解决问题：")
+        for issue in payload["resolved_issues"]:
+            print(f"- {issue['problem']} → {issue['resolution']}")
+    print(f"质量：{payload['quality']['summary']}")
+    for detail in payload["quality"]["details"]:
+        print(f"- {detail}")
+    if payload["needs_your_decision"]:
+        print("需要你决定：")
+        for decision in payload["needs_your_decision"]:
+            print(f"- {decision}")
+    else:
+        print("需要你决定：暂无")
+    print(f"下一步：{payload['next_action']}")
+
+
+def cmd_project(args: argparse.Namespace) -> None:
+    root = repository_root(args.root)
+    _, state = load_state(root, args.id)
+    payload = project_view_payload(root, state)
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return
+    print_project_view(payload)
 
 
 def cmd_pause(args: argparse.Namespace) -> None:
