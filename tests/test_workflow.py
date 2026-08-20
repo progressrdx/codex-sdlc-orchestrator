@@ -490,14 +490,18 @@ class WorkflowToolTests(unittest.TestCase):
             "--request",
             "实现会员积分过期功能。需要产品、研发和测试评审。",
         )
-        self.assertIn("Initialized REQ-", started.stdout)
         self.assertIn("Project:", started.stdout)
+        self.assertIn("Project Compass\n项目守航已开启", started.stdout)
         self.assertIn("目标：", started.stdout)
+        self.assertIn("项目方向：[正在确认方向]", started.stdout)
+        self.assertIn("目标保护：", started.stdout)
         self.assertIn("当前：正在理解你的目标和项目背景", started.stdout)
         self.assertIn("需要你决定：暂无", started.stdout)
         self.assertNotIn("Mode:", started.stdout)
         self.assertNotIn("Stage:", started.stdout)
         self.assertNotIn("Can advance:", started.stdout)
+        self.assertNotIn(" mode", started.stdout)
+        self.assertNotIn("State:", started.stdout)
 
         overview = self.run_tool("overview", "--json")
         payload = json.loads(overview.stdout)
@@ -516,6 +520,7 @@ class WorkflowToolTests(unittest.TestCase):
         )
 
         project = self.run_tool("project")
+        self.assertTrue(project.stdout.startswith("Project Compass\n项目守航已开启\n"))
         self.assertIn(
             "目标：Members keep earned points until the configured expiration date.",
             project.stdout,
@@ -523,6 +528,7 @@ class WorkflowToolTests(unittest.TestCase):
         self.assertIn("暂不包含：No changes to earning rules", project.stdout)
         self.assertIn("完成标准：Expired points are excluded", project.stdout)
         self.assertIn("当前：正在梳理范围、验收结果和潜在风险", project.stdout)
+        self.assertIn("项目方向：[与目标一致]", project.stdout)
         self.assertIn("质量：最终质量检查尚未完成", project.stdout)
         self.assertIn("需要你决定：暂无", project.stdout)
         for internal_term in (
@@ -542,6 +548,7 @@ class WorkflowToolTests(unittest.TestCase):
         )
         self.assertNotIn("mode", project_json)
         self.assertNotIn("stage", project_json)
+        self.assertEqual("on_track", project_json["alignment"]["status"])
         self.assertEqual("已定义，等待开发", project_json["core_results"][0]["status"])
         self.assertEqual([], project_json["available_actions"])
 
@@ -559,11 +566,14 @@ class WorkflowToolTests(unittest.TestCase):
 
         project = self.run_tool("project")
         self.assertIn("当前：已整理目标和范围，准备与你确认", project.stdout)
+        self.assertIn("项目方向：[等待你的方向确认]", project.stdout)
         self.assertIn("需要你决定：", project.stdout)
         self.assertIn("请确认我理解的目标、范围和完成标准是否正确。", project.stdout)
         self.assertIn("下一步：等待你的决定后继续推进。", project.stdout)
         self.assertNotIn("requirement_confirmation", project.stdout)
         self.assertNotIn("artifact:", project.stdout)
+        payload = json.loads(self.run_tool("project", "--json").stdout)
+        self.assertEqual("confirmation_needed", payload["alignment"]["status"])
 
     def test_project_view_shows_result_status_actions_and_resolved_problems(self) -> None:
         self.init("micro")
@@ -608,6 +618,7 @@ class WorkflowToolTests(unittest.TestCase):
         self.assertIn("Button copy used the old label", project.stdout)
 
         payload = json.loads(self.run_tool("project", "--json").stdout)
+        self.assertEqual("on_track", payload["alignment"]["status"])
         self.assertEqual("等待验证", payload["core_results"][0]["status"])
         self.assertEqual("implementation", payload["available_actions"][0]["kind"])
         self.assertEqual(1, len(payload["resolved_issues"]))

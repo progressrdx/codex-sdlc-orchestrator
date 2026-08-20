@@ -132,14 +132,16 @@ def cmd_init(args: argparse.Namespace) -> None:
     }
     save_state(path, state)
     claim_active_pointer(root, path, state)
-    print(f"Initialized {workflow_id} in {args.mode} mode")
-    print(f"State: {path.relative_to(root)}")
-    print(f"Artifacts: {docs_dir.relative_to(root)}")
+    if not getattr(args, "quiet", False):
+        print(f"Initialized {workflow_id} in {args.mode} mode")
+        print(f"State: {path.relative_to(root)}")
+        print(f"Artifacts: {docs_dir.relative_to(root)}")
 
 
 def cmd_start(args: argparse.Namespace) -> None:
     if not getattr(args, "title", None):
         args.title = title_from_request(args.request)
+    args.quiet = True
     cmd_init(args)
     root = repository_root(args.root)
     _, state = load_state(root, getattr(args, "id", None))
@@ -660,6 +662,62 @@ def _project_quality(root: Path, state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _project_alignment(
+    root: Path, state: dict[str, Any], decisions: list[str]
+) -> dict[str, Any]:
+    """Explain goal drift protection without exposing the internal delivery model."""
+    workflow = state["workflow"]
+    risk_status = state.get("risk_assessment", {}).get("status")
+    important_issues = [
+        item
+        for item in outstanding_issues(state)
+        if item.get("severity") in {"blocker", "major"}
+    ]
+    scope_changes = [
+        item
+        for item in state.get("scope_changes", [])
+        if item.get("status") == "approved"
+    ]
+
+    if workflow["status"] == "completed":
+        status = "completed"
+        label = "已按目标完成"
+        summary = "最终结果已经按记录的目标和完成标准核对。"
+    elif risk_status != "current":
+        status = "defining"
+        label = "正在确认方向"
+        summary = "目标和边界仍在梳理，尚未把不确定内容当成已确认工作。"
+    elif state.get("escalation", {}).get("status") == "required" or important_issues:
+        status = "attention"
+        label = "发现偏离风险"
+        summary = "可能影响目标的事项已被拦下，处理或确认前不会继续推进。"
+    elif decisions:
+        status = "confirmation_needed"
+        label = "等待你的方向确认"
+        summary = "有一项决定可能影响最终结果，确认前不会替你改变目标。"
+    elif scope_changes:
+        latest = max(scope_changes, key=lambda item: str(item.get("approved_at", "")))
+        reason = str(latest.get("reason", "")).strip()
+        status = "realigned"
+        label = "已重新对齐"
+        summary = (
+            f"已根据你确认的变化调整后续工作：{reason}"
+            if reason
+            else "已根据你确认的变化重新调整后续工作。"
+        )
+    else:
+        status = "on_track"
+        label = "与目标一致"
+        summary = "当前工作仍围绕已记录的目标和完成标准推进。"
+
+    return {
+        "status": status,
+        "label": label,
+        "summary": summary,
+        "protection": "发现目标、范围或完成标准发生变化时，会先向你说明并确认。",
+    }
+
+
 def project_view_payload(root: Path, state: dict[str, Any]) -> dict[str, Any]:
     workflow = state["workflow"]
     stage = workflow["current_stage"]
@@ -681,6 +739,7 @@ def project_view_payload(root: Path, state: dict[str, Any]) -> dict[str, Any]:
         "project_id": workflow["id"],
         "title": workflow["title"],
         "goal": _project_goal(state),
+        "alignment": _project_alignment(root, state, decisions),
         "out_of_scope": str(baseline.get("out_of_scope", "")).strip() or None,
         "acceptance": str(baseline.get("acceptance", "")).strip() or None,
         "current_focus": PROJECT_FOCUS.get(stage, "正在推进当前工作"),
@@ -696,8 +755,13 @@ def project_view_payload(root: Path, state: dict[str, Any]) -> dict[str, Any]:
 
 
 def print_project_view(payload: dict[str, Any]) -> None:
+    print("Project Compass")
+    print("项目守航已开启")
     print(f"{payload['title']}")
     print(f"目标：{payload['goal']}")
+    alignment = payload["alignment"]
+    print(f"项目方向：[{alignment['label']}] {alignment['summary']}")
+    print(f"目标保护：{alignment['protection']}")
     if payload.get("out_of_scope"):
         print(f"暂不包含：{payload['out_of_scope']}")
     if payload.get("acceptance"):

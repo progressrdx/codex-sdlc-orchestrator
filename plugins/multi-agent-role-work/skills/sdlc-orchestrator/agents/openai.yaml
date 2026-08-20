@@ -1,4 +1,6 @@
 interface:
-  display_name: "Team Development Coordinator"
-  short_description: "Start, continue, inspect, or accept formal team delivery"
-  default_prompt: "Use $sdlc-orchestrator for this request: 团队开发：实现会员积分过期功能。"
+  display_name: "Project Compass"
+  short_description: "Keep a project moving without losing sight of its goal"
+  default_prompt: "开启一个新项目，并确保它始终围绕我的目标推进。"
+policy:
+  allow_implicit_invocation: true

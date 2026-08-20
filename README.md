@@ -1,6 +1,6 @@
-# AI Project Manager for Codex
+# Project Compass for Codex
 
-An install-once Codex plugin that keeps a project aligned with its goal, advances the work, verifies the result, and asks the user only for meaningful decisions. Its simple project view is backed by the existing persistent, risk-aware multi-role delivery engine.
+Project Compass keeps long-running work from drifting away from what you actually wanted. You describe the outcome; it keeps the goal visible, tells you whether the project is still on track, flags changes that could alter the result, and checks the final result against the goal. The delivery machinery stays in the background.
 
 ## Install once
 
@@ -12,52 +12,55 @@ codex plugin marketplace add progressrdx/multi-agent-role-work && codex plugin a
 
 Start a new Codex task after installation. The plugin is then available in every project; no files need to be copied into those projects and no `AGENTS.md` or `.codex/config.toml` needs to be edited.
 
-## Start in any project
+## Start a project
 
-Open the project in Codex and say:
-
-```text
-团队开发：实现会员积分过期功能。
-```
-
-`团队开发：<需求>` is the recommended entry. It opens requirement discovery, not implementation authorization. The coordinator records the text after the prefix as the original request, performs a structured requirement-gap and risk check, and recommends the lowest safe workflow mode before PRD, design, or code. It always checks for missing details; it asks the user only when an unresolved choice can materially change the result.
-
-The prefix must introduce an actionable request. A discussion such as “团队开发和个人开发有什么区别” does not activate the workflow. `$sdlc-orchestrator` remains available as the advanced explicit entry:
+Open the project in Codex and choose or say:
 
 ```text
-使用 $sdlc-orchestrator 开发会员积分过期功能。
+开启一个新项目
 ```
 
-You may also name a minimum mode when you already know the assurance level you need:
+When the plugin is selected, every response begins with the same visible activation signature:
 
 ```text
-团队开发（strict）：执行用户数据迁移，并在就绪评审和最终验收时由我人工批准。
+Project Compass
+项目守航已开启
 ```
 
-To inspect or continue:
+If this signature is missing, treat the reply as an ordinary Codex response rather than a Project Compass response. Project Compass then asks what you want to accomplish. Describe it normally—there is no workflow vocabulary to learn. No project state is created until a concrete goal exists.
+
+You can also use the one-line fast path:
 
 ```text
-继续当前正式研发流程。
-当前流程进行到哪一步？
-查看当前阻塞问题和待办事项。
+开始项目：让会员积分在配置的到期日自动失效。
 ```
 
-When you temporarily switch topics, say “暂停当前研发流程”. Pausing preserves all evidence while stopping automatic workflow context and rejecting state changes; “继续当前正式研发流程” resumes at the same stage.
+Starting a project means “keep this goal in view and help me reach it.” It does not mean blindly starting to code. Project Compass first makes sure the outcome is clear enough to avoid building the wrong thing, and asks only when your decision could materially change the result.
 
-Those progress checks use the user-facing `project` view. It shows the current goal, current focus, recent verified results, quality status, and anything that genuinely needs a user decision. Internal stages, modes, gates, role meetings, and cost controls remain available through the advanced `overview` diagnostic command.
+To continue or inspect the project, use ordinary project language:
 
-Use `继续团队开发` to resume a paused workflow and `查看研发进度` to inspect it. Because the plugin installs no lifecycle hook, a bare “继续” is always ordinary conversation and never routes or resumes a formal workflow.
+```text
+继续推进当前项目，先告诉我有没有偏离目标。
+项目有没有跑偏？
+查看项目进展。
+调整项目目标。
+确认最终结果。
+```
 
-Clear continuation phrases work only when `.ai-workflow/active.yaml` exists. Without an active workflow, “继续团队开发” or “开始验收” reports that no workflow exists and never creates one.
+When you temporarily switch topics, say “暂停当前项目”. Later, “继续推进当前项目” picks up the recorded goal, decisions, and results. A bare “继续” remains ordinary conversation and does not guess which project you mean.
 
-Ordinary coding, explanation, and isolated-fix requests do not activate the formal workflow.
+Ordinary coding, explanation, and isolated-fix requests are unaffected. The legacy “团队开发” entry remains compatible for existing users, but it is no longer the recommended product language.
 
 ## What the user sees
 
-The default project update is intentionally compact:
+The default update makes the core value explicit:
 
 ```text
+Project Compass
+项目守航已开启
 目标：会员积分在配置的到期日失效
+项目方向：[与目标一致] 当前工作仍围绕已记录的目标和完成标准推进。
+目标保护：发现目标、范围或完成标准发生变化时，会先向你说明并确认。
 当前：正在开发已确认的功能
 核心结果：
 - [等待验证] 到期积分不再计入可用余额
@@ -71,19 +74,19 @@ The default project update is intentionally compact:
 下一步：我会继续推进，并在出现可体验结果或需要你判断时更新你。
 ```
 
-Core-result states are derived from recorded goals, implementation evidence, verification, and final outcomes—never from a fabricated percentage. When a preview, implementation summary, quality report, journey report, or delivery result exists, the view exposes it as an inspectable action. Resolved problems are summarized separately from remaining risks.
+Direction and result states come from recorded goals, confirmed changes, actual outputs, checks, and final outcomes—never from a fabricated percentage or vague confidence. When a preview, implementation summary, quality report, journey report, or delivery result exists, the view exposes it as an inspectable action. Resolved problems are summarized separately from remaining risks.
 
-The state machine, exact evidence, assurance mode, role handoffs, and verification bindings are still preserved. They are diagnostics and enforcement mechanisms rather than the default product language.
+Internally, the plugin still preserves exact state, evidence, independent checks, change impact, and recoverable project memory. Those are enforcement mechanisms, not concepts the user needs to learn.
 
 When compatible external design Skills are installed, the coordinator can add them to a relevant role assignment. Product Design is used only for explicit visual exploration, screenshot-grounded audits, faithful source cloning, or implementation of a selected visual target—not for ordinary frontend work merely because it has a UI. Frontend design guidance and web-interface review Skills remain optional; the bundled product, engineering, and testing roles continue normally when they are unavailable, and the coordinator discloses which specialized pass did not run.
 
-For a high-risk requirement, you can ask for human checkpoints without naming a mode; risk assessment may still recommend `strict`:
+For a high-impact project, ask for explicit confirmation at the moments that matter:
 
 ```text
-团队开发：执行用户数据迁移，并要求在就绪评审和最终验收时由我人工批准。
+开始项目：执行用户数据迁移；在实施前和最终交付前都必须由我明确确认。
 ```
 
-The coordinator pauses at each configured checkpoint. AI role approvals never substitute for the named human authority.
+Project Compass pauses for those decisions. Internal checks never substitute for the named human authority.
 
 ## What it creates
 
@@ -101,7 +104,11 @@ docs/requirements/<requirement-id>/
 
 Meeting records exist for material decisions, disagreements, defect triage, scope changes, and accountable handoffs—not routine status or raw transcripts. Gate bundles carry their own inline record, avoiding a redundant extra document.
 
-## Workflow
+## Internal engine reference
+
+Everything below documents the enforcement engine for maintainers and advanced diagnostics. Users do not need to understand or operate these concepts to keep a project aligned.
+
+### Workflow
 
 The default `standard` flow is:
 
@@ -119,7 +126,7 @@ intake → scope_check → clarification → requirement_confirmation
 
 Every concrete mode ends with an explicit user delivery confirmation. Product, engineering, and testing approval cannot complete the workflow on the user's behalf.
 
-Formal workflow routing is explicit and on demand. Start with `团队开发：<request>` or `$sdlc-orchestrator`; continue with phrases such as “继续团队开发” or “查看研发进度”. The plugin installs no lifecycle hooks and does not block ordinary source edits. At preview or delivery confirmation, criticism such as “这个结果不对” is treated as requested changes—not as approval or permission to silently edit the sample. The coordinator records the decision through the workflow command before changing product files; any later product change invalidates the verification binding and blocks delivery until verification runs again.
+Internal routing is explicit and on demand. The default user entry is `开始一个新项目` or `开始项目：<goal>`; legacy `团队开发：<request>` and `$sdlc-orchestrator` entries remain available for compatibility and diagnostics. The plugin installs no lifecycle hooks and does not block ordinary source edits. At preview or delivery confirmation, criticism such as “这个结果不对” is treated as requested changes—not as approval or permission to silently edit the sample. The coordinator records the decision through the workflow command before changing product files; any later product change invalidates the verification binding and blocks delivery until verification runs again.
 
 Natural-language starts use temporary `auto` mode. During `scope_check`, the coordinator must explicitly check actors/permissions, goals/scope, business rules/states, data/API effects, failures/edges, compatibility/rollout, subjective choices, and acceptance/verification. It records scope, exclusions, unresolved gaps, and risk flags, then recommends `micro`, `quick`, `standard`, or `strict`. API/data changes, cross-module behavior, security/privacy, migrations, production actions, and irreversible work raise the minimum mode. An explicitly requested mode is never silently downgraded.
 

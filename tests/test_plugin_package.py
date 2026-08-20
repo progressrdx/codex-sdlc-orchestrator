@@ -89,13 +89,20 @@ class PluginPackageTests(unittest.TestCase):
             encoding="utf-8"
         )
 
-        for content in (skill, contract, agent):
-            self.assertIn("团队开发", content)
+        for content in (skill, contract):
+            self.assertIn("开始一个新项目", content)
+        self.assertIn("开启一个新项目", agent)
+        self.assertIn("开启一个新项目", skill)
+        self.assertIn("创建新项目", skill)
+        self.assertIn("### Project Compass", skill)
+        self.assertIn("项目守航已开启", contract)
+        self.assertIn("allow_implicit_invocation: true", agent)
+        self.assertIn("团队开发", skill)
         self.assertIn("ordinary questions", skill)
-        self.assertIn("继续团队开发", skill)
+        self.assertIn("继续推进当前项目", skill)
         self.assertIn("bare ambiguous 继续", skill)
         self.assertIn("bare “继续” is ordinary conversation", contract)
-        self.assertIn("$sdlc-orchestrator", agent)
+        self.assertIn("$sdlc-orchestrator", skill)
 
     def test_user_facing_project_view_is_the_default_product_surface(self) -> None:
         orchestrator = PLUGIN / "skills" / "sdlc-orchestrator"
@@ -110,8 +117,11 @@ class PluginPackageTests(unittest.TestCase):
             (PLUGIN / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
         )
 
-        self.assertEqual("AI Project Manager", manifest["interface"]["displayName"])
-        self.assertIn("User-friendly project view", manifest["interface"]["capabilities"])
+        self.assertEqual("Project Compass", manifest["interface"]["displayName"])
+        self.assertIn(
+            "Shows whether the project is still on track",
+            manifest["interface"]["capabilities"],
+        )
         self.assertIn("overview --json", skill)
         self.assertIn("Use `project` for user communication", contract)
         self.assertIn('subparsers.add_parser(\n        "project"', cli)
@@ -123,7 +133,7 @@ class PluginPackageTests(unittest.TestCase):
         )
         capabilities = manifest["interface"]["capabilities"]
         self.assertNotIn("Active-workflow lifecycle guards", capabilities)
-        self.assertIn("Optional external design-skill routing", capabilities)
+        self.assertIn("Flags changes that could shift the outcome", capabilities)
 
     def test_roles_document_optional_design_skill_handoffs(self) -> None:
         product = (PLUGIN / "skills" / "sdlc-product" / "SKILL.md").read_text(

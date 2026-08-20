@@ -1,22 +1,33 @@
 ---
 name: sdlc-orchestrator
-description: "Use for explicit formal multi-role delivery: 团队开发：功能请求, $sdlc-orchestrator, 继续团队开发, 查看研发进度, 修改当前需求, or 开始验收. Read state first, then coordinate product, engineering, and testing gates. Do not use for ordinary questions, isolated fixes, or a bare ambiguous 继续."
+description: "Start, create, or keep a project aligned with its goal: 开始一个新项目, 开启一个新项目, 创建新项目, 我想做一个项目, 帮我做一个项目, 开始项目：具体目标, 继续推进当前项目, 项目有没有跑偏, 查看项目进展, 调整项目目标, or explicit $sdlc-orchestrator use. Read state first, show the Project Compass activation signature, keep delivery mechanics internal, and surface only goal alignment, outcomes, quality, and meaningful user decisions. Do not use for ordinary questions, isolated fixes, or a bare ambiguous 继续."
 ---
 
-# Coordinate the SDLC workflow
+# Keep the project aligned with its goal
 
-Keep the main thread focused on business decisions, state transitions, and synthesized results. Delegate bounded work to independent role subagents and explicitly name the bundled phase Skill in every delegation prompt. The plugin must work without project-local Skills, custom agents, `.codex/config.toml`, or `AGENTS.md` changes.
+Keep the main thread focused on the user's goal, whether the work is still aligned, observable outcomes, quality, and decisions that genuinely need the user. Treat stages, modes, gates, roles, evidence bindings, and state transitions as internal implementation details unless the user explicitly asks for technical diagnostics. Delegate bounded work to independent role subagents and explicitly name the bundled phase Skill in every delegation prompt. The plugin must work without project-local Skills, custom agents, `.codex/config.toml`, or `AGENTS.md` changes.
+
+## Visible activation signature
+
+Every user-facing response produced because this Skill was selected must begin with this stable identity block before any question, update, or result:
+
+```markdown
+### Project Compass
+**项目守航已开启**
+```
+
+Follow it with one short sentence explaining the immediate value, such as “我会持续检查项目是否偏离目标，发现变化时先向你说明。” Never omit, rename, paraphrase, or bury this identity block. Its presence is the user's confirmation that the plugin was actually invoked; if the block is absent, treat the experience as an ordinary Codex response rather than a Project Compass response. Do not call it a native card or imply that a Skill-only response is host-rendered plugin UI.
 
 ## Start or resume
 
 1. Locate the repository root.
 2. Resolve this Skill's own directory from the loaded `SKILL.md` path and run `python3 <skill-dir>/scripts/workflow.py --root <repository-root> status`. Never assume the Skill lives inside the target repository.
-3. Treat an actionable `团队开发：<request>` prefix as an explicit formal-process request. Pass `<request>` to `start --request` without asking the user to repeat it. Equivalent explicit phrases such as “启动正式研发流程” or “使用多角色流程开发” also qualify. A discussion such as “团队开发和个人开发有什么区别” does not.
-4. If no workflow exists and the user explicitly requested the formal process, initialize it with `start --request ... --mode auto` unless the user explicitly chose a mode. Add `--title ...` only when the user gives a better short title. Add `--require-human-approval <gate>` for each configured human checkpoint.
+3. Treat `开始一个新项目`, `开启一个新项目`, `创建新项目`, and equivalent first-person requests such as `我想做一个项目` or `帮我做一个项目` as friendly discovery entries. When no goal is included, show the activation signature, say “我会持续检查项目是否偏离目标，发现变化时先向你说明。”, then ask only “你想完成什么？像平时聊天一样描述即可。” Do not initialize state yet. Treat an actionable `开始项目：<goal>` or equivalent request to keep a named goal moving without drifting as an explicit project start. Pass the goal to `start --request` without asking the user to repeat it. The legacy `团队开发：<request>` and direct `$sdlc-orchestrator` invocation remain advanced compatibility entries, not the default product language. Merely discussing project management does not activate the workflow.
+4. If no workflow exists and the user explicitly asked to start a project with a concrete goal, initialize it with `start --request ... --mode auto` unless the user explicitly chose an assurance level. Add `--title ...` only when the user gives a better short title. Add `--require-human-approval <gate>` for each configured human checkpoint.
 5. Treat an explicitly requested mode as a minimum floor. Natural-language requests without a mode always start in `auto`; determine the lowest safe concrete mode during scope analysis.
-6. Route only clear workflow phrases such as “继续团队开发”, “查看研发进度”, “修改当前需求”, and “开始验收”. A bare “继续” is ordinary conversation because, without a lifecycle hook, the Skill cannot reliably know the user's target before activation. Without active state, even a clear continuation phrase reports that no workflow exists and never creates one.
-   If the user explicitly pauses the workflow, run `pause --reason ...`; paused state preserves evidence and rejects delivery mutations. Run `resume` only for an explicit formal-workflow continuation such as “继续团队开发”.
-7. On every routed workflow turn, run `overview --json` internally before assigning work or writing files. Do not infer the current stage from the conversation, a prior summary, or the user's wording. Use `project` for the user-facing progress update; present its core-result states, resolved problems, and available preview/report actions, making repository targets clickable when the client supports file links. Do not expose modes, stages, gates, meeting counts, evidence keys, or cost policy unless the user explicitly asks for advanced workflow diagnostics. The plugin installs no lifecycle hooks; ordinary conversation must remain unaffected.
+6. Route only clear project phrases such as “继续推进当前项目”, “项目有没有跑偏”, “查看项目进展”, “调整项目目标”, and “确认最终结果”. Legacy phrases such as “继续团队开发” remain compatible. A bare “继续” is ordinary conversation because, without a lifecycle hook, the Skill cannot reliably know the user's target before activation. Without active state, even a clear continuation phrase reports that no project exists and never creates one.
+   If the user explicitly pauses the project, run `pause --reason ...`; paused state preserves evidence and rejects delivery mutations. Run `resume` only for an explicit project continuation such as “继续推进当前项目”.
+7. On every routed project turn, run `overview --json` internally before assigning work or writing files. Do not infer internal state from the conversation, a prior summary, or the user's wording. Begin with the visible activation signature, then use `project` for the user-facing update; lead with the goal-alignment signal, then present core-result states, resolved problems, and available preview/report actions, making repository targets clickable when the client supports file links. Do not expose SDLC, modes, stages, gates, role meetings, evidence keys, or cost policy unless the user explicitly asks for advanced diagnostics. The plugin installs no lifecycle hooks; ordinary conversation must remain unaffected.
 8. Treat `start` as opening scope and risk analysis, not permission to build. Advance from intake to `scope_check`, read [scope-risk-template.md](assets/scope-risk-template.md), and inspect the request and repository before asking questions or selecting a mode.
 9. Do not initialize a formal workflow from an ordinary coding request.
 
