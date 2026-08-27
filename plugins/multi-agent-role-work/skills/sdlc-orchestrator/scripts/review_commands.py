@@ -19,6 +19,47 @@ def invoke(name: str, api: Any, args: Any) -> Any:
     return invoke_bound(globals(), name, api, args)
 
 
+REVIEW_MARKER_ALIASES = {
+    "prd_review": ("prd review", "产品需求评审", "需求评审"),
+    "readiness_review": ("readiness review", "开发前检查", "就绪评审"),
+    "acceptance": ("acceptance", "交付验收", "最终验收"),
+    "product": ("product", "产品"),
+    "engineering": ("engineering", "工程", "开发"),
+    "testing": ("testing", "测试"),
+}
+
+
+def _require_review_evidence_text(text: str, gate: str, role: str, verdict: str) -> None:
+    for marker in (gate, role):
+        aliases = (*REVIEW_MARKER_ALIASES.get(marker, ()), marker)
+        if not any(contains_marker(text, alias) for alias in aliases):
+            raise WorkflowError(
+                f"Review evidence must identify: {marker.replace('_', ' ')}"
+            )
+    recorded = re.findall(
+        r"(?im)^\s*(?:review_verdict|评审结论)\s*:\s*(approve|reject)\s*$",
+        text,
+    )
+    if len(recorded) != 1 or recorded[0] != verdict:
+        raise WorkflowError(
+            "Review evidence must contain exactly one "
+            f"review_verdict: {verdict} line."
+        )
+
+
+def cmd_check_review_evidence(args: argparse.Namespace) -> None:
+    """Validate review wording before completing work or assembling a gate bundle."""
+    root = repository_root(args.root)
+    evidence_path, evidence = repository_evidence_path(
+        root, args.path, minimum_chars=MIN_DOCUMENT_CHARS
+    )
+    require_markdown_structure(evidence_path)
+    _require_review_evidence_text(
+        evidence_path.read_text(encoding="utf-8"), args.gate, args.role, args.verdict
+    )
+    print(f"Review evidence is ready: {args.gate}:{args.role}:{args.verdict} ({evidence})")
+
+
 def _finding_key(
     gate: str,
     role: str,
@@ -156,11 +197,9 @@ def cmd_decide(args: argparse.Namespace) -> None:
     evidence_path, evidence = repository_evidence_path(
         root, args.evidence, minimum_chars=MIN_DOCUMENT_CHARS
     )
-    evidence_text = evidence_path.read_text(encoding="utf-8")
-    for required_text in (args.gate, args.role, "verdict", args.verdict):
-        if not contains_marker(evidence_text, required_text):
-            readable = required_text.replace("_", " ")
-            raise WorkflowError(f"Review evidence must identify: {readable}")
+    _require_review_evidence_text(
+        evidence_path.read_text(encoding="utf-8"), args.gate, args.role, args.verdict
+    )
     evidence_hash = content_sha256(evidence_path)
     raw_findings: list[dict[str, str]] = []
     for raw in getattr(args, "finding", None) or []:
@@ -319,11 +358,7 @@ def cmd_submit_gate_review(args: argparse.Namespace) -> None:
             root, str(item.get("evidence", "")), minimum_chars=MIN_DOCUMENT_CHARS
         )
         evidence_text = evidence_path.read_text(encoding="utf-8")
-        for required_text in (gate, role, "verdict", verdict):
-            if not contains_marker(evidence_text, required_text):
-                raise WorkflowError(
-                    f"Review evidence for {role} must identify: {required_text.replace('_', ' ')}"
-                )
+        _require_review_evidence_text(evidence_text, gate, role, verdict)
         evidence_hash = content_sha256(evidence_path)
         findings = _normalize_findings(
             item.get("findings", []),

@@ -10,6 +10,7 @@ MUTATING_COMMANDS = frozenset(
     {
         "init",
         "start",
+        "prepare-turn",
         "pause",
         "resume",
         "activate",
@@ -30,6 +31,8 @@ MUTATING_COMMANDS = frozenset(
         "escalate-mode",
         "record-artifact",
         "record-artifact-bundle",
+        "archive-documents",
+        "record-requirement-confirmation",
         "record-core-goals",
         "register-acceptance-criteria",
         "approve-scope-change",
@@ -126,6 +129,13 @@ def build_parser(api: Any) -> argparse.ArgumentParser:
         help="Deprecated and fail-closed; use deactivate/abandon plus a new ID",
     )
     start.set_defaults(func=cmd_start)
+
+    prepare_turn = subparsers.add_parser(
+        "prepare-turn",
+        help="Prepare an active project turn, enable Git protection, and detect unrecorded source work",
+    )
+    prepare_turn.add_argument("--json", action="store_true")
+    prepare_turn.set_defaults(func=cmd_prepare_turn)
 
     status = subparsers.add_parser("status", help="Show workflow status")
     status.add_argument("--json", action="store_true")
@@ -418,6 +428,27 @@ def build_parser(api: Any) -> argparse.ArgumentParser:
     )
     artifact_bundle.set_defaults(func=cmd_record_artifact_bundle)
 
+    archive_documents = subparsers.add_parser(
+        "archive-documents",
+        help="Move superseded documents into one indexed archive and update historical references",
+    )
+    archive_documents.add_argument(
+        "--manifest",
+        required=True,
+        help="Repository JSON or YAML manifest declaring archive_id, reason, and documents",
+    )
+    archive_documents.set_defaults(func=cmd_archive_documents)
+
+    check_review = subparsers.add_parser(
+        "check-review-evidence",
+        help="Validate one role review before completing work or submitting a gate bundle",
+    )
+    check_review.add_argument("--gate", choices=GATES, required=True)
+    check_review.add_argument("--role", choices=ROLES, required=True)
+    check_review.add_argument("--verdict", choices=("approve", "reject"), required=True)
+    check_review.add_argument("--path", required=True)
+    check_review.set_defaults(func=cmd_check_review_evidence)
+
     goals = subparsers.add_parser(
         "record-core-goals",
         help="Lock explicit user-confirmed outcomes before strict design work",
@@ -550,6 +581,15 @@ def build_parser(api: Any) -> argparse.ArgumentParser:
     feedback.add_argument("--evidence", required=True)
     feedback.add_argument("--affected-stage", choices=tuple(STAGE_LABELS))
     feedback.set_defaults(func=cmd_record_user_feedback)
+
+    confirmation = subparsers.add_parser(
+        "record-requirement-confirmation",
+        help="Record an explicit user approval or rejection of the requirement baseline",
+    )
+    confirmation.add_argument("--verdict", choices=("approve", "reject"), required=True)
+    confirmation.add_argument("--summary", required=True)
+    confirmation.add_argument("--evidence", required=True)
+    confirmation.set_defaults(func=cmd_record_requirement_confirmation)
 
     delivery = subparsers.add_parser(
         "record-delivery-confirmation",

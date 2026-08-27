@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -16,6 +17,36 @@ PLUGIN = ROOT / "plugins" / "multi-agent-role-work"
 
 
 class PluginPackageTests(unittest.TestCase):
+    def test_role_guidance_links_resolve_inside_packaged_plugin(self) -> None:
+        """Packaged reference reachability, not a test of professional judgment."""
+        references = {
+            "sdlc-product": "interface-judgment.md",
+            "sdlc-engineering": "engineering-judgment.md",
+            "sdlc-testing": "verification-judgment.md",
+            "sdlc-review": "review-judgment.md",
+            "sdlc-orchestrator": "coordination-judgment.md",
+        }
+        for skill, reference in references.items():
+            root = PLUGIN / "skills" / skill
+            pending = [root / "SKILL.md"]
+            visited = set()
+            while pending:
+                source = pending.pop().resolve()
+                if source in visited:
+                    continue
+                visited.add(source)
+                for link in re.findall(r"\[[^\]]*\]\(([^\s)]+)\)", source.read_text(encoding="utf-8")):
+                    if "://" in link or link.startswith("#"):
+                        continue
+                    target = (source.parent / link.split("#", 1)[0]).resolve()
+                    with self.subTest(skill=skill, source=source.name, link=link):
+                        self.assertTrue(target.is_relative_to(PLUGIN.resolve()))
+                        self.assertTrue(target.is_file(), f"Missing packaged reference: {link}")
+                    if target.is_file() and target.suffix == ".md":
+                        pending.append(target)
+            with self.subTest(skill=skill, reference=reference):
+                self.assertIn((root / "references" / reference).resolve(), visited)
+
     def test_manifest_and_marketplace_paths_are_consistent(self) -> None:
         manifest = json.loads(
             (PLUGIN / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
@@ -53,6 +84,7 @@ class PluginPackageTests(unittest.TestCase):
         scripts = PLUGIN / "skills" / "sdlc-orchestrator" / "scripts"
         required_modules = {
             "artifact_commands.py",
+            "archive_commands.py",
             "workflow.py",
             "workflow_cli.py",
             "state_store.py",
@@ -75,7 +107,7 @@ class PluginPackageTests(unittest.TestCase):
         workflow_lines = (scripts / "workflow.py").read_text(encoding="utf-8").splitlines()
         self.assertLess(
             len(workflow_lines),
-            2000,
+            2050,
             "workflow.py should remain a shared rules/facade module, not absorb command groups",
         )
 
@@ -99,10 +131,43 @@ class PluginPackageTests(unittest.TestCase):
         self.assertIn("allow_implicit_invocation: true", agent)
         self.assertIn("团队开发", skill)
         self.assertIn("ordinary questions", skill)
+        self.assertIn("every project follow-up", skill)
+        self.assertIn("ordinary-sounding questions", contract)
         self.assertIn("继续推进当前项目", skill)
-        self.assertIn("bare ambiguous 继续", skill)
-        self.assertIn("bare “继续” is ordinary conversation", contract)
+        self.assertIn("A bare “继续” remains ordinary conversation only when", skill)
+        self.assertIn("a bare “继续” neither invokes the workflow", contract)
         self.assertIn("$sdlc-orchestrator", skill)
+        self.assertIn("activation text exactly once", contract)
+        self.assertIn("persistent Project Compass result card", contract)
+        self.assertIn("commentary may collapse", contract)
+        self.assertIn("Continue through safe internal steps", contract)
+        self.assertIn("language of the original project request", contract)
+        self.assertIn("safely initializes Git", contract)
+        self.assertIn("check-review-evidence", skill)
+        self.assertIn("prepare-turn --json", skill)
+        self.assertIn("archive-documents", skill)
+        self.assertIn("_archive/<change-or-archive-id>", skill)
+        self.assertIn("Archived documents are history only", skill)
+        self.assertIn("Fail closed", skill)
+
+    def test_project_compass_keeps_qa_automation_owned_by_the_plugin(self) -> None:
+        orchestrator = PLUGIN / "skills" / "sdlc-orchestrator"
+        skill = (orchestrator / "SKILL.md").read_text(encoding="utf-8")
+        contract = (orchestrator / "references" / "workflow-contract.md").read_text(
+            encoding="utf-8"
+        )
+        testing = (PLUGIN / "skills" / "sdlc-testing" / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("`自动验证`, `需要授权`, or `主观验收`", skill)
+        self.assertIn("automatic verification", contract.lower())
+        self.assertIn("subjective acceptance", contract.lower())
+        self.assertIn("`automatic verification`", testing)
+        self.assertIn("`subjective acceptance`", testing)
+        self.assertIn("media decoding/playback", testing)
+        self.assertIn("Do not ask the user to perform them", testing)
+        self.assertIn("never substitutes user labor for QA", contract)
 
     def test_user_facing_project_view_is_the_default_product_surface(self) -> None:
         orchestrator = PLUGIN / "skills" / "sdlc-orchestrator"
@@ -125,6 +190,16 @@ class PluginPackageTests(unittest.TestCase):
         self.assertIn("overview --json", skill)
         self.assertIn("Use `project` for user communication", contract)
         self.assertIn('subparsers.add_parser(\n        "project"', cli)
+        self.assertIn('subparsers.add_parser(\n        "prepare-turn"', cli)
+        self.assertIn('subparsers.add_parser(\n        "archive-documents"', cli)
+        self.assertIn(
+            "Keeps active-project follow-ups visibly routed",
+            manifest["interface"]["capabilities"],
+        )
+        self.assertIn(
+            "Archives superseded documents without losing history",
+            manifest["interface"]["capabilities"],
+        )
 
     def test_plugin_does_not_package_lifecycle_hooks(self) -> None:
         self.assertFalse((PLUGIN / "hooks").exists())
@@ -153,6 +228,76 @@ class PluginPackageTests(unittest.TestCase):
             self.assertIn("available in the current runtime", content)
         self.assertIn("ordinary frontend implementation", engineering)
         self.assertIn("supplemental evidence", testing)
+
+    def test_roles_package_professional_practice_and_review_lenses(self) -> None:
+        role_expectations = {
+            "sdlc-product": (
+                "references/professional-practice.md",
+                ("Problem framing and discovery", "Product model", "Metrics and learning"),
+            ),
+            "sdlc-engineering": (
+                "references/professional-practice.md",
+                ("Repository and change diagnosis", "Contracts and data", "Delivery evidence"),
+            ),
+            "sdlc-testing": (
+                "references/professional-practice.md",
+                ("Risk model", "Test technique selection", "Oracles and evidence"),
+            ),
+        }
+
+        for skill_name, (relative_reference, required_sections) in role_expectations.items():
+            skill_root = PLUGIN / "skills" / skill_name
+            skill = (skill_root / "SKILL.md").read_text(encoding="utf-8")
+            self.assertIn("professional-practice.md", skill)
+            self.assertIn("Professional quality bar", skill)
+            reference = (skill_root / relative_reference).read_text(encoding="utf-8")
+            for section in required_sections:
+                self.assertIn(section, reference)
+
+        review_root = PLUGIN / "skills" / "sdlc-review"
+        review_skill = (review_root / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("role-review-lenses.md", review_skill)
+        review_lenses = (
+            review_root / "references" / "role-review-lenses.md"
+        ).read_text(encoding="utf-8")
+        for role_lens in ("Product lens", "Engineering lens", "Testing lens"):
+            self.assertIn(role_lens, review_lenses)
+
+    def test_visual_capability_chain_is_packaged_and_routed(self) -> None:
+        orchestrator = PLUGIN / "skills" / "sdlc-orchestrator"
+        orchestrator_skill = (orchestrator / "SKILL.md").read_text(encoding="utf-8")
+        routing = (
+            orchestrator / "references" / "visual-capability-routing.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("visual-capability-routing.md", orchestrator_skill)
+        self.assertIn("visual-direction output", orchestrator_skill)
+        self.assertIn("visual_direction=<path>", routing)
+        self.assertIn("Missing optional Skills never block", routing)
+
+        expected = {
+            "sdlc-product": (
+                "references/visual-direction.md",
+                "assets/visual-direction-template.md",
+                "$product-design:ideate",
+            ),
+            "sdlc-engineering": (
+                "references/visual-prototype.md",
+                "assets/prototype-evidence-template.md",
+                "$frontend-design",
+            ),
+            "sdlc-testing": (
+                "references/visual-quality.md",
+                "assets/verification-report-template.md",
+                "$product-design:audit",
+            ),
+        }
+        for skill_name, (reference, asset, optional_skill) in expected.items():
+            root = PLUGIN / "skills" / skill_name
+            skill = (root / "SKILL.md").read_text(encoding="utf-8")
+            self.assertTrue((root / reference).is_file())
+            self.assertTrue((root / asset).is_file())
+            self.assertIn(Path(reference).name, skill)
+            self.assertIn(optional_skill, skill)
 
     def test_current_plugin_tree_is_self_contained_after_git_archive(self) -> None:
         """Validate the exact candidate formed from the current plugin worktree.

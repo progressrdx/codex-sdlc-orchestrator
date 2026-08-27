@@ -1,52 +1,52 @@
-# Meeting notes: <meeting type> / <title>
+# 协作记录：<类型> / <标题>
 
-## Metadata
+## 基本信息
 
-- Meeting ID: assigned after recording
-- Workflow ID:
-- Stage:
-- Type: `prd_review | readiness_review | design_sync | defect_triage | change_control | acceptance | ad_hoc`
-- Participants: `product`, `engineering`, `testing`, `user`, `coordinator` as applicable
-- Related requirements, issues, and artifacts:
+- 记录 ID：保存后分配
+- 项目 ID：
+- 当前阶段：
+- 类型：`prd_review | readiness_review | design_sync | defect_triage | change_control | acceptance | ad_hoc`
+- 参与方：按实际填写 `product`、`engineering`、`testing`、`user`、`coordinator`
+- 相关需求、问题和文档：
 
-## Purpose and context
+## 目的与背景
 
-Summarize why the roles communicated and what decision or alignment was needed.
+简要说明为什么需要协作，以及本次要形成什么决定或共识。
 
-## Key role positions
+## 各方关键观点
 
-Keep only subsections for actual participants; add `user` or `coordinator` when they materially contributed.
+只保留实际参与并影响结论的部分；用户或协调者有实质贡献时再加入。
 
-### product
+### 产品
 
-Record the business intent, scope, or product concern that materially affected the discussion.
+记录影响讨论的业务目标、范围或产品关注点。
 
-### engineering
+### 工程
 
-Record feasibility, design, implementation, cost, risk, or technical concerns.
+记录可行性、方案、成本、实施风险或技术顾虑。
 
-### testing
+### 测试
 
-Record testability, quality, boundary, evidence, or release concerns.
+记录可测性、质量边界、证据或发布风险。
 
-## Key discussion and disagreements
+## 关键讨论与分歧
 
-Capture the reasoning that changed a decision. Preserve unresolved disagreement explicitly; omit conversational filler and raw transcript text.
+只记录改变决定的理由；明确保留尚未解决的分歧，不保存闲聊或逐字转录。
 
-## Decisions and rationale
+## 决定与理由
 
-| ID | Decision | Rationale | Decision owner | Affected requirement/artifact |
+| ID | 决定 | 理由 | 决策负责人 | 受影响的需求/文档 |
 |---|---|---|---|---|
 
-## Action items
+## 后续行动
 
-| ID | Action | Owner | Due stage | Status |
+| ID | 行动 | 负责人 | 完成阶段 | 状态 |
 |---|---|---|---|---|
 
-## Open questions and risks
+## 未决问题与风险
 
-## Outcome
+## 结论
 
 `approved | rejected | aligned | actions_required | escalated`
 
-## Next step
+## 下一步

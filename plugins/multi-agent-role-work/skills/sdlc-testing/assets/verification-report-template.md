@@ -1,24 +1,49 @@
-# Verification report: <title>
+# 核验报告：<标题>
 
-## 1. Build and revision tested
+## 1. 被测构建与版本
 
-## 2. Environment
+## 2. 环境
 
-## 3. Commands executed
+## 3. 实际执行的命令
 
-| Command | Exit code | Result | Evidence |
+| 命令 | 退出码 | 结果 | 证据 |
 |---|---:|---|---|
 
-## 4. Acceptance-criteria results
+## 3.1 被验证的风险与测试预言
 
-| AC | Test IDs | Verdict | Evidence/defect |
+| 风险/测试 | 正确性判断依据 | 实际观察 | 证据强度/限制 |
 |---|---|---|---|
 
-## 5. Defects
+## 4. 验收标准结果
 
-## 6. Regression results
+| AC | 对应测试 | 结论 | 证据/缺陷 |
+|---|---|---|---|
 
-## 7. Residual risks and blocked checks
+## 5. 缺陷
 
-## 8. Overall independent verdict
+## 6. 回归结果
 
+## 6.1 视觉与交互质量证据（适用时）
+
+| 视口/状态 | 检查项 | 实际结果 | 截图/浏览器证据 | 结论 |
+|---|---|---|---|---|
+
+- 与所选视觉方向的一致性：
+- 客观缺陷：
+- 留给用户的主观方向判断：
+
+## 7. 剩余风险与未完成检查
+
+## 8. 独立总体结论
+
+- 已证明：
+- 失败或阻塞：
+- 未测试及原因：
+- 剩余暴露面：
+- 改变当前结论所需证据：
+
+## 9. 用户实际路径与目标差距
+
+- 用户启动方式：
+- 实际完成的核心结果：
+- 仍是演示、占位或未实现的部分：

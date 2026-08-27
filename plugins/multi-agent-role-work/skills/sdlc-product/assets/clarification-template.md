@@ -1,29 +1,40 @@
-# Requirement clarification
+# 需求澄清
 
-## Raw request
+## 原始需求
 
-Summarize the user's original request in one or two sentences.
+用一两句话概括用户最初想得到的结果。
 
-## Missing details
+## 问题与证据
 
-List material gaps that would change product behavior, implementation, testing, or acceptance.
+- 目标用户/参与者：
+- 触发场景与当前做法：
+- 期望进展与失败影响：
+- 已知事实、证据与待验证推断：
 
-## Ambiguities and risks
+## 缺失信息
 
-Capture ambiguous wording, conflicting goals, hidden assumptions, and likely user-satisfaction risks.
+列出会改变产品行为、实现、测试或验收结果的实质缺口。
 
-## Assumptions
+## 歧义与风险
 
-State only temporary assumptions. Do not treat them as confirmed.
+记录含糊表达、冲突目标、隐藏假设和可能影响用户满意度的风险。
 
-## Questions for the user
+## 临时假设
 
-Ask the smallest set of high-impact questions needed before PRD, design, or coding.
+只记录临时假设，不得把它们当成用户已经确认的事实。
 
-## Acceptance criteria gaps
+## 需要询问用户的问题
 
-List acceptance criteria that cannot be made observable or testable yet.
+只询问进入需求、方案或实现前必须明确的高影响问题。
 
-## Synthesized understanding to confirm
+## 验收标准缺口
 
-Write the current best understanding that the user must confirm or correct.
+列出当前还无法观察或测试的验收标准。
+
+## 待用户确认的理解
+
+写出目前对需求的最佳理解，请用户确认或纠正。
+
+## 建议的最小完整结果
+
+描述真实用户可以从入口到结果完成的最小闭环，以及明确不包含的内容。

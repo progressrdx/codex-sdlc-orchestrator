@@ -1,54 +1,77 @@
-# Product requirements document: <title>
+# 产品需求文档：<标题>
 
-## 1. Metadata
+## 1. 基本信息
 
-- Workflow ID:
-- Version:
-- Status: Draft
-- Owner: Product
+- 项目 ID：
+- 版本：
+- 状态：草稿
+- 负责人：产品
 
-## 2. Background and objective
+## 2. 背景与目标
 
-## 3. Users and scenarios
+### 问题证据与当前替代方案
 
-## 4. Scope
+### 用户价值与业务价值
 
-### In scope
+### 成功信号与护栏指标
 
-### Out of scope
+| 指标 | 类型（结果/诊断/护栏） | 口径与数据源 | 当前基线/目标 | 盲区 |
+|---|---|---|---|---|
 
-## 5. Business flow and states
+## 3. 用户与使用场景
 
-## 6. Functional requirements
+## 4. 范围
 
-| ID | Requirement | Priority | Notes |
+### 包含范围
+
+### 不包含范围
+
+## 5. 业务流程与状态
+
+### 界面工作方式（有界面且涉及结构决策时）
+
+- 使用频率、熟练度、对象规模与主要任务：
+- 工作区结构及依据（不仅是风格名称）：
+- 必须可见 / 按需展开的信息与操作：
+- 候选结构取舍及代表性验证任务：
+
+## 6. 功能需求
+
+| ID | 需求 | 优先级 | 备注 |
 |---|---|---|---|
-| FR-001 | | Must | |
+| FR-001 | | 必须 | |
 
-## 7. Non-functional requirements
+## 7. 非功能需求
 
-| ID | Requirement | Measure |
+| ID | 需求 | 衡量方式 |
 |---|---|---|
 | NFR-001 | | |
 
-## 8. Business rules and permissions
+## 8. 业务规则与权限
 
-## 9. Exceptions and boundary conditions
+## 9. 异常与边界情况
 
-## 10. Acceptance criteria
+## 10. 验收标准
 
-| ID | Requirement | Given | When | Then |
+| ID | 对应需求 | 前提 | 操作 | 预期结果 |
 |---|---|---|---|---|
 | AC-001 | FR-001 | | | |
 
-## 11. Data and reporting needs
+## 11. 数据与报表需求
 
-## 12. Assumptions, dependencies, and risks
+## 12. 假设、依赖与风险
 
-## 13. Unresolved questions
+## 13. 未决问题
 
-## 14. Decision and revision log
+## 14. 决策与修订记录
 
-| Date | Decision/change | Reason | Owner |
+| 日期 | 决定/变化 | 原因 | 负责人 |
 |---|---|---|---|
 
+## 15. 发布、学习与回退
+
+- 真实用户入口：
+- 首次发布/验证范围：
+- 需要验证的关键假设：
+- 失败或不可用时的用户体验：
+- 回退或停止条件：

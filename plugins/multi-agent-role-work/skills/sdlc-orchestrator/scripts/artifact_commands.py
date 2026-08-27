@@ -11,6 +11,48 @@ def invoke(name: str, api: Any, args: Any) -> Any:
     return invoke_bound(globals(), name, api, args)
 
 
+def _contains_marker(text: str, marker: str) -> bool:
+    variants = {marker, marker.replace("_", " "), marker.replace("_", "-")}
+    return any(variant.lower() in text.lower() for variant in variants)
+
+
+def require_artifact_content(name: str, path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    groups: dict[str, dict[str, tuple[str, ...]]] = {
+        "clarification_questions": {
+            "question": ("question", "问题", "需确认"),
+            "missing": ("missing", "缺失", "缺口", "待补充"),
+            "assumption": ("assumption", "假设", "暂定"),
+            "acceptance": ("acceptance", "验收", "完成标准"),
+        },
+        "prototype": {
+            "preview": ("preview", "预览", "原型"),
+            "scope": ("scope", "范围", "包含内容"),
+            "how to inspect": ("how to inspect", "如何查看", "体验方式", "检查方式"),
+        },
+    }
+    for marker, aliases in groups.get(name, {}).items():
+        if not any(_contains_marker(text, alias) for alias in aliases):
+            if name == "prototype":
+                raise WorkflowError(f"Prototype evidence must identify: {marker}")
+            raise WorkflowError(
+                "Clarification evidence must cover questions, missing details, assumptions, "
+                f"and acceptance criteria; missing: {marker}"
+            )
+    approvals = {
+        "requirement_confirmation": (("user", "用户"), ("confirmed", "approve", "确认", "同意", "批准")),
+        "user_feedback": (("user", "用户"), ("feedback", "反馈", "预览结论"), ("approve", "approved", "通过", "确认", "同意")),
+    }
+    if name in approvals and not all(
+        any(_contains_marker(text, marker) for marker in group) for group in approvals[name]
+    ):
+        if name == "requirement_confirmation":
+            raise WorkflowError(
+                "Requirement confirmation evidence must record explicit user confirmation."
+            )
+        raise WorkflowError("User feedback evidence must record explicit user approval.")
+
+
 def cmd_record_artifact(args: argparse.Namespace) -> None:
     root = repository_root(args.root)
     path, state = load_state(root, args.id)

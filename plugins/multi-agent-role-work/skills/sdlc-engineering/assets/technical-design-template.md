@@ -1,31 +1,68 @@
-# Technical design: <title>
+# 技术方案：<标题>
 
-## 1. Metadata and source requirements
+## 1. 基本信息与需求来源
 
-## 2. Current system assessment
+### 用户界面方向绑定（适用时）
 
-## 3. Proposed architecture and component changes
+- 产品工作项 ID：
+- 视觉方向路径：
+- 视觉方向 SHA-256：
+- 已选方向与仍待用户判断的内容：
+- 允许工程细化与不得静默改变的边界：
+- 纳入本方案基线的视觉系统与状态要求：
 
-## 4. Requirement-to-design mapping
+## 2. 现状评估
 
-| Requirement | Design element | Verification seam |
+- 决策相关的已观察事实与待验证假设：
+- 必须保持的业务/数据不变量：
+
+## 3. 建议架构与组件变化
+
+### 备选方案与取舍
+
+| 方案 | 需求适配 | 复杂度/风险 | 兼容与运维影响 | 可逆性 | 结论 |
+|---|---|---|---|---|---|
+
+- 哪项证据或约束变化会推翻当前选择（仅关键决定）：
+
+## 4. 需求与方案映射
+
+| 需求 | 方案要素 | 可核验入口 |
 |---|---|---|
 
-## 5. Interfaces and contracts
+## 5. 接口与约定
 
-## 6. Data flow, state, transactions, and concurrency
+## 6. 数据流、状态、事务与并发
 
-## 7. Permissions and security
+## 7. 权限与安全
 
-## 8. Failure handling, retries, and idempotency
+## 8. 失败处理、重试与幂等
 
-## 9. Compatibility and migration
+## 9. 兼容与迁移
 
-## 10. Observability
+## 10. 可观测性
 
-## 11. Rollout and rollback
+- 成功、失败与退化信号：
+- 关联标识与诊断路径：
+- 告警阈值/责任边界：
+- 敏感信息与日志约束：
 
-## 12. Implementation slices and dependencies
+## 11. 发布与回滚
 
-## 13. Risks, alternatives, and unresolved questions
+- 回退覆盖代码、流量还是数据；不可逆边界及验证方式（适用时）：
 
+## 12. 实现拆分与依赖
+
+## 13. 风险、备选方案与未决问题
+
+## 14. 测试接缝与可核验证据
+
+| 风险/需求 | 最低有效测试层 | 稳定接缝/控制点 | 预期证据 |
+|---|---|---|---|
+
+## 15. 原型渲染与视觉验证计划（适用时）
+
+- 代表性窄/宽视口：
+- 必须呈现的状态：
+- 浏览器、截图、键盘、触控与动效检查：
+- 与视觉方向的核对方式：

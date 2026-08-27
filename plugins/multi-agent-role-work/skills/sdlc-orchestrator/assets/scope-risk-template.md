@@ -1,54 +1,68 @@
-# Scope and risk check
+# 范围与风险检查
 
-## Task baseline
+## 任务基线
 
-- Intended user outcome:
-- In scope:
-- Out of scope:
-- Observable acceptance:
-- Verification approach:
+- 预期用户结果：
+- 包含范围：
+- 不包含范围：
+- 可观察的验收结果：
+- 核验方式：
+- 用户实际启动/使用路径：
+- 本地或云端运行方式：
+- 外部服务、模型、隐私和费用影响：
+- 可复用的现有方案及取舍：
 
-## Requirement gaps
+## 视觉能力判定（适用时）
 
-Check every category before deciding whether to ask the user anything:
+- 界面类型与首要任务：
+- 视觉/交互呈现是否实质影响用户判断：
+- 现有设计系统与方向是否足够：
+- 尚未决定的视觉方向：
+- 是否启用产品方向 → 工程原型 → 测试视觉验收：
+- 可用专项 Skill 与内置回退：
+- 代表性视口、状态与自动验证方式：
 
-- Actors and permissions:
-- Main flow and states:
-- Business rules:
-- Data and API behavior:
-- Failures and edge cases:
-- Compatibility and rollout:
-- Subjective product or visual choices:
-- Unresolved assumptions:
+用户可见不等于需要视觉设计；CLI、API 和后台行为不应仅因可见性而触发此链路。
 
-Write `none found` only after checking the category. Ask the user only about unresolved items that can materially change scope, behavior, risk, or acceptance.
+## 需求缺口
 
-## Risk flags
+决定是否询问用户之前，逐项检查：
 
-- Scope expansion:
-- User-visible behavior:
-- Subjective judgment:
-- Weak automated verification:
-- External dependency:
-- API change:
-- Data-schema change:
-- Cross-module change:
-- Business ambiguity:
-- Systemic verification failure:
-- Security or privacy:
-- Irreversible operation:
-- Data migration:
-- Production release:
+- 用户角色与权限：
+- 主流程与状态：
+- 业务规则：
+- 数据与接口行为：
+- 失败和边界情况：
+- 兼容性与上线方式：
+- 主观产品或视觉选择：
+- 尚未确认的假设：
 
-## Workflow decision
+只有完成检查后才能填写“未发现”。只询问会实质改变范围、行为、风险或验收结果的问题。
 
-- Recommended mode:
-- Selected mode:
-- Reason:
-- Clarification required:
-- Requirement confirmation required:
-- Preview and user feedback required:
+## 风险标记
 
-Apply the deterministic combination rules: three or more distinct quick-level flags require at
-least `standard`; `weak_verification` combined with either `user_visible` or
-`external_dependency` also requires at least `standard`. Any strict-level flag requires `strict`.
+- 范围扩张：
+- 用户可见行为：
+- 主观判断：
+- 自动核验能力弱：
+- 外部依赖：
+- 接口变化：
+- 数据结构变化：
+- 跨模块变化：
+- 业务含义不清：
+- 系统性核验失败：
+- 安全或隐私：
+- 不可逆操作：
+- 数据迁移：
+- 生产发布：
+
+## 推进决定
+
+- 推荐强度：
+- 采用强度：
+- 原因：
+- 是否需要澄清：
+- 是否需要确认需求：
+- 是否需要预览和用户反馈：
+
+组合规则保持确定：三个及以上不同的 quick 级风险至少使用 `standard`；`weak_verification` 与 `user_visible` 或 `external_dependency` 同时存在时也至少使用 `standard`；任何 strict 级风险都使用 `strict`。

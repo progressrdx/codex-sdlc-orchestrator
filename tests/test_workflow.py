@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -275,6 +276,8 @@ class WorkflowToolTests(unittest.TestCase):
             actor,
             "--deadline-at",
             "2099-01-01T00:00:00Z",
+            "--lease-seconds",
+            "3600",
             *override_args,
         )
         self.run_tool(
@@ -288,6 +291,44 @@ class WorkflowToolTests(unittest.TestCase):
             ),
         )
         return work_item_id, actor
+
+    def record_implementation_while_editing_source(self, source: Path, content: str) -> None:
+        """Model the real implementation order: claim the work before editing source."""
+        self.work_counter += 1
+        work_item_id = f"engineering-work-{self.work_counter:03d}"
+        self.run_tool(
+            "begin-work",
+            "--work-item-id",
+            work_item_id,
+            "--role",
+            "engineering",
+            "--actor-ref",
+            f"engineering-agent-{self.work_counter:03d}",
+            "--deadline-at",
+            "2099-01-01T00:00:00Z",
+            "--lease-seconds",
+            "3600",
+        )
+        source.write_text(content, encoding="utf-8")
+        artifact = self.write_artifact("requirements/REQ-test-flow/implementation.md")
+        self.run_tool(
+            "complete-work",
+            "--work-item-id",
+            work_item_id,
+            "--output",
+            f"implementation={artifact.relative_to(self.root)}",
+        )
+        self.run_tool(
+            "record-artifact",
+            "--name",
+            "implementation",
+            "--path",
+            str(artifact.relative_to(self.root)),
+            "--status",
+            "ready",
+            "--work-item-id",
+            work_item_id,
+        )
 
     def record_clarification(self) -> None:
         self.record(
@@ -303,15 +344,21 @@ class WorkflowToolTests(unittest.TestCase):
         )
 
     def confirm_requirements(self) -> None:
-        self.record(
-            "requirement_confirmation",
+        evidence = self.write_artifact(
             "requirements/REQ-test-flow/00-requirement-confirmation.md",
-            text=(
+            (
+                "confirmation_verdict: approve\n\n"
                 "# User requirement confirmation\n\n"
                 "## User decision\n\nThe user confirmed and approved the clarified scope for this workflow.\n\n"
                 "## Confirmed scope\n\nProduct may proceed to PRD or design using the documented clarification.\n\n"
                 "## Open items\n\nNo unresolved business decision blocks the next stage.\n"
             ),
+        )
+        self.run_tool(
+            "record-requirement-confirmation",
+            "--verdict", "approve",
+            "--summary", "The user approved the clarified requirement baseline.",
+            "--evidence", str(evidence.relative_to(self.root)),
         )
         if self.workflow_mode == "strict":
             goals = self.write_artifact(
@@ -356,6 +403,7 @@ class WorkflowToolTests(unittest.TestCase):
         evidence = self.write_artifact(
             "requirements/REQ-test-flow/07-user-feedback.md",
             (
+                "feedback_verdict: approve\n\n"
                 "# User feedback\n\n"
                 "## User decision\n\nThe user reviewed the preview and approved the direction for implementation.\n\n"
                 "## Feedback summary\n\nNo product-direction changes are requested before implementation.\n\n"
@@ -382,6 +430,7 @@ class WorkflowToolTests(unittest.TestCase):
         evidence = self.write_artifact(
             f"requirements/REQ-test-flow/delivery-{verdict}.md",
             (
+                f"delivery_verdict: {verdict}\n\n"
                 "# User delivery confirmation\n\n"
                 f"## User verdict\n\nThe user recorded {verdict} after inspecting the verified result.\n\n"
                 "## Evidence reviewed\n\nThe implementation summary and independent verification report were shown.\n\n"
@@ -443,7 +492,7 @@ class WorkflowToolTests(unittest.TestCase):
         for role in roles:
             evidence = self.write_artifact(
                 f"requirements/REQ-test-flow/reviews/{gate}-{role}.md",
-                f"# Review: {gate.replace('_', ' ')} / {role}\n\nInputs were checked against the gate criteria. "
+                f"review_verdict: approve\n\n# Review: {gate.replace('_', ' ')} / {role}\n\nInputs were checked against the gate criteria. "
                 "No blocking findings remain.\n\n## Verdict\n\napprove\n",
             )
             work_item_id, actor_ref = self.complete_role_work(
@@ -510,6 +559,149 @@ class WorkflowToolTests(unittest.TestCase):
         self.assertTrue(payload["can_advance"])
         self.assertIn("original_request", payload["completed_artifacts"])
 
+        project_payload = json.loads(self.run_tool("project", "--json").stdout)
+        self.assertEqual(
+            "initialized_without_baseline",
+            project_payload["version_protection"]["status"],
+        )
+        state = self.workflow_module().load_state(self.root, None)[1]
+        self.assertEqual("zh-CN", state["user_preferences"]["language"])
+        self.assertIsNone(project_payload["stage_summary"]["decision"])
+        self.assertIn("是否需要你操作：否", started.stdout)
+        self.assertEqual(
+            "true",
+            subprocess.run(
+                ["git", "-C", str(self.root), "rev-parse", "--is-inside-work-tree"],
+                text=True, capture_output=True, check=True,
+            ).stdout.strip(),
+        )
+        self.assertNotEqual(
+            0,
+            subprocess.run(
+                ["git", "-C", str(self.root), "rev-parse", "--verify", "HEAD"],
+                text=True, capture_output=True, check=False,
+            ).returncode,
+            "starting Project Compass must not create an unsolicited baseline commit",
+        )
+
+    def test_start_preserves_existing_git_branch_remote_and_uncommitted_work(self) -> None:
+        source = self.initialize_git_source()
+        subprocess.run(["git", "-C", str(self.root), "checkout", "-qb", "user-work"], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.root), "remote", "add", "origin", "https://example.invalid/user/repo.git"],
+            check=True,
+        )
+        source.write_text("print('user work in progress')\n", encoding="utf-8")
+        self.run_tool("start", "--request", "继续完成已有项目，但不要改动版本管理配置。")
+        branch = subprocess.run(
+            ["git", "-C", str(self.root), "branch", "--show-current"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        remote = subprocess.run(
+            ["git", "-C", str(self.root), "remote", "get-url", "origin"],
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "-C", str(self.root), "status", "--short", "app.py"],
+            text=True, capture_output=True, check=True,
+        ).stdout
+        self.assertEqual("user-work", branch)
+        self.assertEqual("https://example.invalid/user/repo.git", remote)
+        self.assertIn(" M app.py", status)
+
+    def test_chinese_artifacts_and_review_preflight_do_not_require_english_headings(self) -> None:
+        self.init()
+        self.run_tool("advance")
+        self.assess_risk()
+        self.run_tool("advance")
+        self.record(
+            "clarification_questions",
+            "requirements/REQ-test-flow/00-clarification-zh.md",
+            text=(
+                "# 需求澄清\n\n## 需要确认的问题\n\n用户希望支持哪些角色和权限？\n\n"
+                "## 缺失信息\n\n失败状态和边界情况仍是缺口。\n\n"
+                "## 临时假设与验收标准\n\n假设先确认范围；验收结果必须可以实际观察。\n"
+            ),
+        )
+        self.run_tool("advance")
+        confirmation = self.write_artifact(
+            "requirements/REQ-test-flow/00-confirmation-zh.md",
+            (
+                "确认结论: approve\n\n"
+                "# 需求确认\n\n## 用户决定\n\n用户已经确认并同意上述目标和范围。\n\n"
+                "## 已确认范围\n\n可以继续准备产品方案，并按记录的完成标准进行后续核验。\n\n"
+                "## 未决事项\n\n当前没有阻塞项，若目标发生变化仍需先向用户说明。\n"
+            ),
+        )
+        self.run_tool(
+            "record-requirement-confirmation",
+            "--verdict", "approve",
+            "--summary", "用户已确认目标和范围。",
+            "--evidence", str(confirmation.relative_to(self.root)),
+        )
+        review = self.write_artifact(
+            "requirements/REQ-test-flow/reviews/readiness-testing-zh.md",
+            "评审结论: approve\n\n# 开发前检查\n\n## 测试复核\n\n已经按用户实际启动方式核对方案和测试计划。\n\n"
+            "## 结论\n\n通过。当前没有阻塞开发的质量问题，后续仍需验证核心用户结果和真实数据来源。\n",
+        )
+        checked = self.run_tool(
+            "check-review-evidence", "--gate", "readiness_review", "--role", "testing",
+            "--verdict", "approve", "--path", str(review.relative_to(self.root)),
+        )
+        self.assertIn("Review evidence is ready", checked.stdout)
+        weak_review = self.write_artifact(
+            "requirements/REQ-test-flow/reviews/readiness-testing-weak.md",
+            "# 开发前检查\n\n## 测试复核\n\n材料已经阅读，但这里没有记录最终决定。\n\n"
+            "## 后续\n\n等待补充正式决定后再继续处理；目前只能说明材料已阅读，不能据此推进实现或交付。\n",
+        )
+        rejected = self.run_tool(
+            "check-review-evidence", "--gate", "readiness_review", "--role", "testing",
+            "--verdict", "approve", "--path", str(weak_review.relative_to(self.root)), expected=2,
+        )
+        self.assertIn("review_verdict: approve", rejected.stderr)
+
+        negative_review = self.write_artifact(
+            "requirements/REQ-test-flow/reviews/readiness-testing-negative.md",
+            "评审结论: reject\n\n# 开发前检查\n\n## 测试复核\n\n"
+            "测试已完成，但关键路径仍然失败，当前证据不足以支持进入实现或交付阶段。\n\n"
+            "## 结论\n\n不通过，必须先修复核心用户路径并重新执行完整评审。\n",
+        )
+        mismatch = self.run_tool(
+            "check-review-evidence", "--gate", "readiness_review", "--role", "testing",
+            "--verdict", "approve", "--path", str(negative_review.relative_to(self.root)),
+            expected=2,
+        )
+        self.assertIn("review_verdict: approve", mismatch.stderr)
+
+    def test_requirement_confirmation_requires_an_explicit_matching_verdict(self) -> None:
+        self.init()
+        self.run_tool("advance")
+        self.assess_risk()
+        self.run_tool("advance")
+        self.record_clarification()
+        self.run_tool("advance")
+        evidence = self.write_artifact(
+            "requirements/REQ-test-flow/00-rejected-confirmation.md",
+            "confirmation_verdict: reject\n\n# 需求确认\n\n"
+            "## 用户决定\n\n用户不同意当前范围，要求补充异常处理和验收结果。\n\n"
+            "## 后续处理\n\n回到澄清阶段，完成补充后再请用户确认。\n\n"
+            "## 影响\n\n当前方案不得进入设计或开发。\n",
+        )
+        mismatch = self.run_tool(
+            "record-requirement-confirmation", "--verdict", "approve",
+            "--summary", "错误地尝试把拒绝记为批准。",
+            "--evidence", str(evidence.relative_to(self.root)), expected=2,
+        )
+        self.assertIn("confirmation_verdict: approve", mismatch.stderr)
+        self.run_tool(
+            "record-requirement-confirmation", "--verdict", "reject",
+            "--summary", "用户拒绝当前范围并要求补充澄清。",
+            "--evidence", str(evidence.relative_to(self.root)),
+        )
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual("clarification", state["workflow"]["current_stage"])
+        self.assertNotIn("requirement_confirmation", state["artifacts"])
+
     def test_project_view_uses_plain_language_and_keeps_overview_technical(self) -> None:
         self.init()
         self.run_tool("advance")
@@ -530,6 +722,8 @@ class WorkflowToolTests(unittest.TestCase):
         self.assertIn("当前：正在梳理范围、验收结果和潜在风险", project.stdout)
         self.assertIn("项目方向：[与目标一致]", project.stdout)
         self.assertIn("质量：最终质量检查尚未完成", project.stdout)
+        self.assertIn("版本保护：Git 已初始化，但尚无基线提交", project.stdout)
+        self.assertIn("是否需要你操作：否", project.stdout)
         self.assertIn("需要你决定：暂无", project.stdout)
         for internal_term in (
             "Mode:",
@@ -549,6 +743,11 @@ class WorkflowToolTests(unittest.TestCase):
         self.assertNotIn("mode", project_json)
         self.assertNotIn("stage", project_json)
         self.assertEqual("on_track", project_json["alignment"]["status"])
+        self.assertEqual(
+            "initialized_without_baseline",
+            project_json["version_protection"]["status"],
+        )
+        self.assertEqual("正在梳理范围、验收结果和潜在风险", project_json["stage_summary"]["current"])
         self.assertEqual("已定义，等待开发", project_json["core_results"][0]["status"])
         self.assertEqual([], project_json["available_actions"])
 
@@ -658,13 +857,10 @@ class WorkflowToolTests(unittest.TestCase):
         )
         rejected = self.run_tool(
             "record-artifact",
-            "--name",
-            "requirement_confirmation",
-            "--path",
-            str(unconfirmed.relative_to(self.root)),
-            expected=2,
+            "--name", "requirement_confirmation",
+            "--path", str(unconfirmed.relative_to(self.root)), expected=2,
         )
-        self.assertIn("explicit user confirmation", rejected.stderr)
+        self.assertIn("record-requirement-confirmation", rejected.stderr)
 
         self.confirm_requirements()
         self.run_tool("advance")
@@ -752,7 +948,16 @@ class WorkflowToolTests(unittest.TestCase):
         self.approve("readiness_review", ("engineering", "testing"))
         self.run_tool("advance")
         self.assertIn("Stage: prototype", self.run_tool("status").stdout)
-        self.complete_preview()
+        preview_state = json.loads(self.run_tool("project", "--json").stdout)
+        self.assertEqual("方向预览中", preview_state["alignment"]["label"])
+        self.assertIn("尚不能证明核心功能已经实现", preview_state["alignment"]["summary"])
+        self.record_prototype()
+        preview_ready = json.loads(self.run_tool("project", "--json").stdout)
+        self.assertEqual("preview", preview_ready["available_actions"][0]["kind"])
+        self.assertIn("不代表核心功能已完成", preview_ready["available_actions"][0]["label"])
+        self.run_tool("advance")
+        self.record_user_feedback()
+        self.run_tool("advance")
         self.assertIn("Stage: implementation", self.run_tool("status").stdout)
 
     def test_user_feedback_blocks_final_implementation_until_preview_is_approved(self) -> None:
@@ -906,8 +1111,7 @@ class WorkflowToolTests(unittest.TestCase):
         self.assess_risk("micro")
         self.run_tool("advance")
         source = self.root / "app.py"
-        source.write_text("print('first version')\n", encoding="utf-8")
-        self.record("implementation", "requirements/REQ-test-flow/implementation.md")
+        self.record_implementation_while_editing_source(source, "print('first version')\n")
         self.run_tool("advance")
         self.record("verification_report", "requirements/REQ-test-flow/verification.md")
         self.run_tool("advance")
@@ -922,9 +1126,9 @@ class WorkflowToolTests(unittest.TestCase):
 
         source.write_text("print('changed after testing')\n", encoding="utf-8")
         blocked = self.run_tool("advance", expected=2)
-        self.assertIn(
-            "verification_snapshot:source_changed_after_verification",
-            blocked.stderr,
+        self.assertTrue(
+            "Project continuity blocked" in blocked.stderr
+            or "verification_snapshot:source_changed_after_verification" in blocked.stderr
         )
 
         self.confirm_delivery("request_changes")
@@ -971,8 +1175,7 @@ class WorkflowToolTests(unittest.TestCase):
         self.assess_risk("micro")
         self.run_tool("advance")
         source = self.root / "app.py"
-        source.write_text("original\n", encoding="utf-8")
-        self.record("implementation", "requirements/REQ-test-flow/implementation.md")
+        self.record_implementation_while_editing_source(source, "original\n")
         self.run_tool("advance")
         report = self.write_artifact("requirements/REQ-test-flow/verification-mutating.md")
         rejected = self.run_tool(
@@ -1027,8 +1230,7 @@ class WorkflowToolTests(unittest.TestCase):
         self.assess_risk("micro")
         self.run_tool("advance")
         source = self.root / "app.py"
-        source.write_text("original\n", encoding="utf-8")
-        self.record("implementation", "requirements/REQ-test-flow/implementation.md")
+        self.record_implementation_while_editing_source(source, "original\n")
         self.run_tool("advance")
         report = self.write_artifact("requirements/REQ-test-flow/verification-mutating-fail.md")
         rejected = self.run_tool(
@@ -1678,7 +1880,7 @@ class WorkflowToolTests(unittest.TestCase):
         self.run_tool("advance")
         evidence = self.write_artifact(
             "requirements/REQ-test-flow/07-user-change-request.md",
-            "# User feedback\n\n## Decision\n\nThe user requested a different interaction direction.\n\n"
+            "feedback_verdict: request_changes\n\n# User feedback\n\n## Decision\n\nThe user requested a different interaction direction.\n\n"
             "## Requested changes\n\nRevise the design before producing another preview.\n\n"
             "## Reason\n\nThe current direction does not match the intended workflow.\n",
         )
@@ -1698,6 +1900,57 @@ class WorkflowToolTests(unittest.TestCase):
         self.assertEqual("design", state["workflow"]["current_stage"])
         self.assertEqual("request_changes", state["user_feedback_records"][-1]["verdict"])
         self.assertEqual("superseded", state["artifacts"]["prototype"]["status"])
+
+    def test_user_feedback_verdict_must_match_the_evidence(self) -> None:
+        self.init("quick")
+        self.complete_discovery()
+        self.record("technical_design", "requirements/REQ-test-flow/03-design.md")
+        self.record("test_plan", "requirements/REQ-test-flow/05-test-plan.md")
+        self.run_tool("advance")
+        self.approve("readiness_review", ("engineering", "testing"))
+        self.run_tool("advance")
+        self.record_prototype()
+        self.run_tool("advance")
+        evidence = self.write_artifact(
+            "requirements/REQ-test-flow/07-user-feedback-rejected.md",
+            "feedback_verdict: reject\n\n# User feedback\n\n## Decision\n\n"
+            "The user rejected the preview direction.\n\n## Reason\n\nThe core interaction is wrong.\n\n"
+            "## Next step\n\nReturn to design before implementation.\n",
+        )
+        rejected = self.run_tool(
+            "record-user-feedback", "--verdict", "approve",
+            "--summary", "Incorrect approval attempt.",
+            "--evidence", str(evidence.relative_to(self.root)), expected=2,
+        )
+        self.assertIn("feedback_verdict: approve", rejected.stderr)
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual("user_feedback", state["workflow"]["current_stage"])
+        self.assertEqual([], state["user_feedback_records"])
+
+    def test_delivery_verdict_must_match_the_evidence(self) -> None:
+        self.init("micro")
+        self.run_tool("advance")
+        self.assess_risk("micro")
+        self.run_tool("advance")
+        self.record("implementation", "requirements/REQ-test-flow/implementation.md")
+        self.run_tool("advance")
+        self.record("verification_report", "requirements/REQ-test-flow/verification.md")
+        self.run_tool("advance")
+        evidence = self.write_artifact(
+            "requirements/REQ-test-flow/delivery-rejected.md",
+            "delivery_verdict: reject\n\n# User delivery confirmation\n\n## User verdict\n\n"
+            "The user rejected the verified delivery.\n\n## Evidence reviewed\n\n"
+            "The implementation and test report were inspected.\n\n## Next step\n\nRevise implementation.\n",
+        )
+        rejected = self.run_tool(
+            "record-delivery-confirmation", "--verdict", "approve",
+            "--summary", "Incorrect approval attempt.",
+            "--evidence", str(evidence.relative_to(self.root)), expected=2,
+        )
+        self.assertIn("delivery_verdict: approve", rejected.stderr)
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual("delivery_confirmation", state["workflow"]["current_stage"])
+        self.assertEqual([], state["delivery_confirmation_records"])
 
     def test_trivial_document_and_non_required_reviewer_are_rejected(self) -> None:
         self.init("quick")
@@ -1812,7 +2065,7 @@ class WorkflowToolTests(unittest.TestCase):
         self.record("test_plan", "requirements/REQ-test-flow/05-test-plan.md")
         self.run_tool("advance")
         shared_review_text = (
-            "# readiness_review engineering testing\n\nBoth role labels are intentionally present.\n\n"
+            "review_verdict: approve\n\n# readiness_review engineering testing\n\nBoth role labels are intentionally present.\n\n"
             "## Findings\n\nNo blockers remain after independent verification of the supplied evidence.\n\n"
             "## Verdict\n\napprove\n"
         )
@@ -1843,7 +2096,7 @@ class WorkflowToolTests(unittest.TestCase):
         )
         unique_testing = self.write_artifact(
             "requirements/REQ-test-flow/reviews/testing-unique.md",
-            "# readiness_review testing\n\nThe test plan was reviewed independently.\n\n"
+            "review_verdict: approve\n\n# readiness_review testing\n\nThe test plan was reviewed independently.\n\n"
             "## Findings\n\nNo blocking verification risk remains.\n\n"
             "## Verdict\n\napprove\n",
         )
@@ -1894,7 +2147,7 @@ class WorkflowToolTests(unittest.TestCase):
         self.run_tool("advance")
         review = self.write_artifact(
             "requirements/REQ-test-flow/reviews/engineering.md",
-            "# readiness_review engineering\n\nISSUE-001 is mentioned for this adversarial test.\n\n"
+            "review_verdict: approve\n\n# readiness_review engineering\n\nISSUE-001 is mentioned for this adversarial test.\n\n"
             "## Findings\n\nThe design evidence was reviewed from the engineering perspective.\n\n"
             "## Verdict\n\napprove\n",
         )
@@ -2006,15 +2259,21 @@ class WorkflowToolTests(unittest.TestCase):
         self.run_tool("advance")
         self.record_clarification()
         self.run_tool("advance")
-        self.record(
-            "requirement_confirmation",
+        evidence = self.write_artifact(
             "requirements/REQ-test-flow/00-requirement-confirmation.md",
-            text=(
+            (
+                "confirmation_verdict: approve\n\n"
                 "# User requirement confirmation\n\n"
                 "## User decision\n\nThe user confirmed and approved the clarified scope.\n\n"
                 "## Confirmed scope\n\nProceed with the real requested outcome.\n\n"
                 "## Open items\n\nNo unresolved decision remains.\n"
             ),
+        )
+        self.run_tool(
+            "record-requirement-confirmation",
+            "--verdict", "approve",
+            "--summary", "The user approved the clarified requirement baseline.",
+            "--evidence", str(evidence.relative_to(self.root)),
         )
         blocked = self.run_tool("advance", expected=2)
         self.assertIn("artifact:core_goals", blocked.stderr)
@@ -2180,7 +2439,10 @@ class WorkflowToolTests(unittest.TestCase):
             "app.py",
             expected=2,
         )
-        self.assertIn("Commit the exact source", dirty.stderr)
+        self.assertTrue(
+            "Project continuity blocked" in dirty.stderr
+            or "Commit the exact source" in dirty.stderr
+        )
         source.write_text("print('verified')\n", encoding="utf-8")
         self.run_tool(
             "record-source-revision",
@@ -2363,12 +2625,12 @@ class WorkflowToolTests(unittest.TestCase):
         self.run_tool("advance")
         engineering = self.write_artifact(
             "requirements/REQ-test-flow/reviews/readiness-engineering-bundle.md",
-            "# readiness_review engineering\n\nThe approved design is feasible and implementation-ready.\n\n"
+            "review_verdict: approve\n\n# readiness_review engineering\n\nThe approved design is feasible and implementation-ready.\n\n"
             "## Findings\n\nNo blocking engineering findings remain.\n\n## Verdict\n\napprove\n",
         )
         testing = self.write_artifact(
             "requirements/REQ-test-flow/reviews/readiness-testing-bundle.md",
-            "# readiness_review testing\n\nThe test plan is executable against the approved scope.\n\n"
+            "review_verdict: approve\n\n# readiness_review testing\n\nThe test plan is executable against the approved scope.\n\n"
             "## Findings\n\nNo blocking testing findings remain.\n\n## Verdict\n\napprove\n",
         )
         engineering_work, _ = self.complete_role_work(
@@ -2648,6 +2910,9 @@ class WorkflowToolTests(unittest.TestCase):
         completed = self.run_tool("advance")
         self.assertIn("delivery_confirmation -> completed", completed.stdout)
         self.assertFalse((self.root / ".ai-workflow" / "active.yaml").exists())
+        project = json.loads(self.run_tool("--id", "REQ-test-flow", "project", "--json").stdout)
+        self.assertEqual("completed", project["alignment"]["status"])
+        self.assertEqual("已按目标完成", project["alignment"]["label"])
 
     def test_state_revision_increments_and_schema_is_validated(self) -> None:
         self.init("quick")
@@ -2793,6 +3058,203 @@ class WorkflowToolTests(unittest.TestCase):
         overview = json.loads(self.run_tool("overview", "--json").stdout)
         self.assertTrue(
             any("Git branch changed" in warning for warning in overview["health_warnings"])
+        )
+
+    def test_prepare_turn_initializes_git_for_an_existing_unprotected_project(self) -> None:
+        self.init("micro")
+        shutil.rmtree(self.root / ".git")
+
+        prepared = json.loads(self.run_tool("prepare-turn", "--json").stdout)
+
+        self.assertEqual("ready", prepared["status"])
+        self.assertEqual("git", prepared["version_control"]["version_control"])
+        self.assertEqual(
+            "initialized", prepared["version_control"]["version_control_status"]
+        )
+        self.assertTrue((self.root / ".git").is_dir())
+        state = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertEqual(
+            "missing", state["repository_context"]["git_baseline_status"]
+        )
+        project = json.loads(self.run_tool("project", "--json").stdout)
+        self.assertEqual(
+            "initialized_without_baseline", project["version_protection"]["status"]
+        )
+
+    def test_prepare_turn_rejects_source_work_newer_than_recorded_state(self) -> None:
+        self.init("micro")
+        state_path = self.root / ".ai-workflow" / "REQ-test-flow" / "state.yaml"
+        before = state_path.read_bytes()
+        source = self.root / "app" / "main.py"
+        source.parent.mkdir()
+        source.write_text("print('outside workflow')\n", encoding="utf-8")
+        future = time.time() + 5
+        os.utime(source, (future, future))
+
+        rejected = self.run_tool("prepare-turn", "--json", expected=2)
+        payload = json.loads(rejected.stdout)
+
+        self.assertEqual("reconciliation_required", payload["status"])
+        self.assertEqual(["app/main.py"], payload["unrecorded_source_paths"])
+        self.assertEqual(before, state_path.read_bytes())
+        overview = json.loads(self.run_tool("overview", "--json").stdout)
+        self.assertIn("workspace:unreconciled_source_activity", overview["missing"])
+        blocked = self.run_tool("advance", expected=2)
+        self.assertIn("Project continuity blocked", blocked.stderr)
+
+    def test_prepare_turn_rejects_a_committed_source_change_after_the_baseline(self) -> None:
+        source = self.initialize_git_source()
+        self.init("micro")
+        source.write_text("print('committed outside workflow')\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(self.root), "add", "app.py"], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.root), "commit", "-m", "outside workflow change"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
+
+        rejected = self.run_tool("prepare-turn", "--json", expected=2)
+
+        payload = json.loads(rejected.stdout)
+        self.assertEqual("reconciliation_required", payload["status"])
+        self.assertEqual(["app.py"], payload["unrecorded_source_paths"])
+
+    def test_archive_documents_moves_only_superseded_files_and_writes_index(self) -> None:
+        self.init("micro")
+        workflow_dir = self.root / "docs/requirements/REQ-test-flow"
+        obsolete = self.write_artifact(
+            "requirements/REQ-test-flow/old-design.md",
+            "# 旧设计\n\n该设计已经由当前方案替代，仅保留用于历史追溯。\n",
+        )
+        replacement = self.write_artifact(
+            "requirements/REQ-test-flow/current-design.md",
+            "# 当前设计\n\n这是当前有效的替代设计。\n",
+        )
+        workflow_module = self.workflow_module()
+        state_path, state = workflow_module.load_state(self.root)
+        state["history"].append(
+            {
+                "at": workflow_module.now(),
+                "event": "legacy_document",
+                "detail": str(obsolete.relative_to(self.root)),
+            }
+        )
+        workflow_module.save_state(state_path, state)
+        manifest = self.write_artifact(
+            "requirements/REQ-test-flow/changes/ARC-001.json",
+            json.dumps(
+                {
+                    "archive_id": "ARC-001-old-design",
+                    "reason": "当前设计已经替代旧设计，旧文件仅保留用于历史追溯。",
+                    "documents": [
+                        {
+                            "path": str(obsolete.relative_to(self.root)),
+                            "replaced_by": str(replacement.relative_to(self.root)),
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+        )
+        self.run_tool("archive-documents", "--manifest", str(manifest.relative_to(self.root)))
+        archived = workflow_dir / "_archive/ARC-001-old-design/old-design.md"
+        index = workflow_dir / "_archive/ARC-001-old-design/INDEX.md"
+        self.assertFalse(obsolete.exists())
+        self.assertTrue(archived.is_file())
+        self.assertIn("current-design.md", index.read_text(encoding="utf-8"))
+        archived_state = json.loads(self.run_tool("status", "--json").stdout)
+        self.assertIn(
+            "docs/requirements/REQ-test-flow/_archive/ARC-001-old-design/old-design.md",
+            {item["detail"] for item in archived_state["history"]},
+        )
+
+        active_manifest = self.write_artifact(
+            "requirements/REQ-test-flow/changes/ARC-002.json",
+            json.dumps(
+                {
+                    "archive_id": "ARC-002-active",
+                    "reason": "此操作必须拒绝，因为当前请求文档仍是有效基线。",
+                    "documents": [
+                        {
+                            "path": "docs/requirements/REQ-test-flow/00-original-request.md",
+                            "replaced_by": str(replacement.relative_to(self.root)),
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+        )
+        rejected = self.run_tool(
+            "archive-documents",
+            "--manifest",
+            str(active_manifest.relative_to(self.root)),
+            expected=2,
+        )
+        self.assertIn("current active document", rejected.stderr)
+        self.assertTrue((workflow_dir / "00-original-request.md").is_file())
+
+        superseded = self.write_artifact(
+            "requirements/REQ-test-flow/old-notes.md",
+            "# 旧记录\n\n这是待归档的历史记录。\n",
+        )
+        current = self.write_artifact(
+            "requirements/REQ-test-flow/current-notes.md",
+            "# 当前记录\n\n这是旧记录指向的当前替代文档。\n",
+        )
+        circular_manifest = self.write_artifact(
+            "requirements/REQ-test-flow/changes/ARC-003.json",
+            json.dumps(
+                {
+                    "archive_id": "ARC-003-invalid-batch",
+                    "reason": "替代文档必须在归档后仍然作为当前有效的追溯目标。",
+                    "documents": [
+                        {
+                            "path": str(superseded.relative_to(self.root)),
+                            "replaced_by": str(current.relative_to(self.root)),
+                        },
+                        {"path": str(current.relative_to(self.root))},
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+        )
+        same_batch = self.run_tool(
+            "archive-documents",
+            "--manifest",
+            str(circular_manifest.relative_to(self.root)),
+            expected=2,
+        )
+        self.assertIn("cannot be archived in the same batch", same_batch.stderr)
+        self.assertTrue(superseded.is_file())
+        self.assertTrue(current.is_file())
+
+    def test_project_view_omits_resolutions_whose_evidence_is_archived(self) -> None:
+        sys.path.insert(0, str(SCRIPT.parent))
+        try:
+            import lifecycle_commands
+        finally:
+            sys.path.pop(0)
+        state = {
+            "issues": [
+                {
+                    "status": "resolved",
+                    "resolved_at": "2026-08-25T12:00:00+00:00",
+                    "summary": "旧方案问题",
+                    "resolution": "旧方案下的处理",
+                    "resolution_evidence": "docs/requirements/REQ/_archive/ARC-001/old.md",
+                },
+                {
+                    "status": "resolved",
+                    "resolved_at": "2026-08-26T12:00:00+00:00",
+                    "summary": "当前方案问题",
+                    "resolution": "当前方案下的处理",
+                    "resolution_evidence": "docs/requirements/REQ/issues/current.md",
+                },
+            ]
+        }
+        self.assertEqual(
+            ["当前方案问题"],
+            [item["problem"] for item in lifecycle_commands._resolved_project_issues(state)],
         )
 
     def test_workflow_ids_and_active_pointer_cannot_escape_repository(self) -> None:
@@ -2985,7 +3447,7 @@ class WorkflowToolTests(unittest.TestCase):
         self.run_tool("advance")
         evidence = self.write_artifact(
             "requirements/REQ-test-flow/reviews/readiness-engineering-reject.md",
-            "# readiness_review engineering review\n\n"
+            "review_verdict: reject\n\n# readiness_review engineering review\n\n"
             "The frozen interface cannot be implemented safely.\n\n"
             "## Verdict\n\nreject\n",
         )

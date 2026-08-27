@@ -20,14 +20,14 @@ Open the project in Codex and choose or say:
 开启一个新项目
 ```
 
-When the plugin is selected, every response begins with the same visible activation signature:
+When the plugin is selected, the first plugin-owned message in each user turn begins with the same visible activation signature:
 
 ```text
 Project Compass
 项目守航已开启
 ```
 
-If this signature is missing, treat the reply as an ordinary Codex response rather than a Project Compass response. Project Compass then asks what you want to accomplish. Describe it normally—there is no workflow vocabulary to learn. No project state is created until a concrete goal exists.
+If this signature is missing, treat the reply as an ordinary Codex response rather than a Project Compass response. It appears once per turn, so longer runs do not repeat the card in every progress update. Project Compass then asks what you want to accomplish. Describe it normally—there is no workflow vocabulary to learn. No project state is created until a concrete goal exists.
 
 You can also use the one-line fast path:
 
@@ -35,7 +35,9 @@ You can also use the one-line fast path:
 开始项目：让会员积分在配置的到期日自动失效。
 ```
 
-Starting a project means “keep this goal in view and help me reach it.” It does not mean blindly starting to code. Project Compass first makes sure the outcome is clear enough to avoid building the wrong thing, and asks only when your decision could materially change the result.
+Starting a project means “keep this goal in view and help me reach it.” It does not mean blindly starting to code. Project Compass first makes sure the outcome is clear enough to avoid building the wrong thing, and asks only when your decision could materially change the result. It also enables safe Git version protection by default when the folder is not already in a repository; it does not create a commit or alter an existing branch, remote, or uncommitted work.
+
+Generated requirements, designs, reviews, test reports, and delivery summaries follow the language of the project request. Chinese projects are Chinese-first; stable English identifiers are retained only where the internal tools require them.
 
 To continue or inspect the project, use ordinary project language:
 
@@ -74,7 +76,9 @@ Project Compass
 下一步：我会继续推进，并在出现可体验结果或需要你判断时更新你。
 ```
 
-Direction and result states come from recorded goals, confirmed changes, actual outputs, checks, and final outcomes—never from a fabricated percentage or vague confidence. When a preview, implementation summary, quality report, journey report, or delivery result exists, the view exposes it as an inspectable action. Resolved problems are summarized separately from remaining risks.
+Direction and result states come from recorded goals, confirmed changes, inspectable behavior, checks, and final outcomes—never from a fabricated percentage, document count, or vague confidence. A placeholder, mock, registration shell, or partial prototype is shown as a direction preview and names the missing core capability; it is never reported as the user's goal already achieved. When a preview, implementation summary, quality report, journey report, or delivery result exists, the view exposes it as an inspectable action. Resolved problems are summarized separately from remaining risks.
+
+Project Compass continues through safe internal corrections automatically. It does not stop merely to repair a heading, identifier, formatting issue, state record, or validation marker. Whenever it genuinely pauses, the update says why, whether you need to act, and exactly what decision or information is needed. A document-confirmation request always includes a short summary of what the stage accomplished, its key conclusion and limitations, and what you are confirming.
 
 Internally, the plugin still preserves exact state, evidence, independent checks, change impact, and recoverable project memory. Those are enforcement mechanisms, not concepts the user needs to learn.
 

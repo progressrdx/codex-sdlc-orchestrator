@@ -1,25 +1,29 @@
-# Database design: <title>
+# 数据库设计：<标题>
 
-## 1. Requirement mapping
+## 1. 需求映射
 
-## 2. Existing schema impact
+## 2. 对现有结构的影响
 
-## 3. Tables and fields
+## 3. 表与字段
 
-| Table | Field | Type | Null | Default | Constraints | Purpose |
+| 表 | 字段 | 类型 | 可空 | 默认值 | 约束 | 用途 |
 |---|---|---|---|---|---|---|
 
-## 4. Keys, indexes, and relationships
+## 4. 主键、索引与关系
 
-## 5. Consistency, transactions, and concurrency
+## 5. 一致性、事务与并发
 
-## 6. Migration and backfill
+## 6. 迁移与历史数据补齐
 
-## 7. Compatibility and rollback
+- 扩展/迁移/收缩顺序：
+- 批次、限速与可重入策略：
+- 新旧版本并行兼容期：
+- 进度、失败与数据校验：
 
-## 8. Retention, privacy, and audit
+## 7. 兼容与回滚
 
-## 9. Verification queries
+## 8. 保留策略、隐私与审计
 
-Use a short not-applicable document with justification when the strict workflow has no persistence change.
+## 9. 核验查询
 
+严格模式下若不存在持久化变化，仍需用简短文档说明“不适用”及理由。

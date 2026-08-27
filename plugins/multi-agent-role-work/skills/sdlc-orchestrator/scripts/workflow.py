@@ -31,13 +31,18 @@ from delivery_commands import invoke as invoke_delivery_command
 from work_commands import invoke as invoke_work_command, require_completed_output
 from lifecycle_commands import invoke as invoke_lifecycle_command
 from artifact_commands import invoke as invoke_artifact_command
+from archive_commands import invoke as invoke_archive_command
 from work_items import WorkItemError, supersede_work_item, validate_work_item
 from stage_submission import StageSubmissionError, validate_submission_receipt
 from execution_policy import (
     EXECUTION_POLICIES,
+    ensure_git_repository,
+    continuity_snapshot,
     execute_verification_commands,
     parse_verification_timeout,
     repository_context,
+    require_project_continuity,
+    source_activity_after_state,
 )
 from source_policy import SourcePolicyError, source_binding, workspace_binding
 from runtime_provenance import (
@@ -168,6 +173,7 @@ ARTIFACT_INVALIDATES_GATES = {
 }
 NOT_APPLICABLE_ALLOWED = {"database_design", "test_cases", "release_plan", "traceability"}
 SPECIALIZED_ARTIFACT_COMMANDS = {
+    "requirement_confirmation": "record-requirement-confirmation",
     "user_feedback": "record-user-feedback",
     "delivery_confirmation": "record-delivery-confirmation",
 }
@@ -432,9 +438,8 @@ def validate_workflow_id(workflow_id: str) -> None:
 
 LIVE_POINTER_STATUSES = frozenset({"active", "paused"})
 TERMINAL_WORKFLOW_STATUSES = frozenset({"completed", "abandoned"})
-LIFECYCLE_MUTATION_COMMANDS = frozenset(
-    {"init", "start", "repair-state", "resume", "activate", "deactivate", "abandon", "reopen"}
-)
+LIFECYCLE_MUTATION_COMMANDS = frozenset({"init", "start", "prepare-turn", "repair-state", "resume", "activate", "deactivate", "abandon", "reopen"})
+CONTINUITY_BYPASS_COMMANDS = frozenset({"prepare-turn", "pause", "deactivate", "abandon", "reopen", "repair-state"})
 TOOL_IDENTITY_FIELDS = (
     "schema_version", "plugin_name", "version", "runtime_root", "entry_path",
     "entry_sha256", "payload_sha256", "git_revision", "dirty",
@@ -710,6 +715,7 @@ def migrate_state(root: Path, state: dict[str, Any]) -> None:
             workflow.setdefault("requested_mode", legacy_mode)
             workflow.setdefault("flow_stages", list(LEGACY_V3_FLOWS[legacy_mode]))
         state.setdefault("risk_assessment", {"status": "legacy_not_required"})
+        state.setdefault("requirement_confirmation_records", [])
         state.setdefault("user_feedback_records", [])
         state.setdefault("delivery_confirmation_records", [])
         state.setdefault("risk_reports", [])
@@ -718,6 +724,8 @@ def migrate_state(root: Path, state: dict[str, Any]) -> None:
             configured = workflow.get("flow_stages", [])
             if "delivery_confirmation" not in configured and "completed" in configured:
                 configured.insert(configured.index("completed"), "delivery_confirmation")
+    state.setdefault("requirement_confirmation_records", [])
+    state.setdefault("user_feedback_records", [])
     state.setdefault("core_goals", {})
     state.setdefault("scope_changes", [])
     state.setdefault("acceptance_criteria", {})
@@ -727,6 +735,16 @@ def migrate_state(root: Path, state: dict[str, Any]) -> None:
     state.setdefault("verification_snapshot", {})
     state.setdefault("journey_validation", {})
     state.setdefault("repository_context", {})
+    if "user_preferences" not in state:
+        language = "en"
+        original_path = state.get("artifacts", {}).get("original_request", {}).get("path")
+        if original_path:
+            try:
+                original_text = (root / str(original_path)).read_text(encoding="utf-8")
+                language = communication_language(original_text)
+            except OSError:
+                pass
+        state["user_preferences"] = {"language": language}
     state.setdefault("work_items", {})
     state.setdefault("stage_submissions", {})
     state.setdefault("runtime_provenance", {})
@@ -824,6 +842,7 @@ def validate_state(state: dict[str, Any], path: Path) -> None:
         "verification_snapshot",
         "journey_validation",
         "repository_context",
+        "user_preferences",
         "work_items",
         "stage_submissions",
         "runtime_provenance",
@@ -854,6 +873,7 @@ def validate_state(state: dict[str, Any], path: Path) -> None:
         "issues",
         "meetings",
         "history",
+        "requirement_confirmation_records",
         "user_feedback_records",
         "delivery_confirmation_records",
         "risk_reports",
@@ -877,6 +897,11 @@ def title_from_request(request: str) -> str:
         return "Requirement"
     sentence = re.split(r"[。.!?]\s*", compact, maxsplit=1)[0].strip()
     return sentence[:60] or "Requirement"
+
+
+def communication_language(text: str) -> str:
+    """Choose the project document language from the user's original request."""
+    return "zh-CN" if re.search(r"[\u3400-\u9fff]", text) else "en"
 
 
 def add_history(state: dict[str, Any], event: str, detail: str) -> None:
@@ -1455,6 +1480,10 @@ def overview_payload(root: Path, state: dict[str, Any]) -> dict[str, Any]:
     stage_missing, stage_notes = stage_requirements(root, state)
     missing, notes = list(stage_missing), list(stage_notes)
     health_warnings: list[str] = []
+    continuity_paths = source_activity_after_state(root, state)
+    if continuity_paths:
+        missing.append("workspace:unreconciled_source_activity")
+        health_warnings.append("Product source changed after the last workflow update without active role ownership; reopen or reconcile the earliest affected stage before continuing.")
     recorded_context = state.get("repository_context", {})
     current_context = repository_context(root)
     provenance = state.get("runtime_provenance", {})
@@ -1629,6 +1658,19 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
     provenance = state.setdefault("runtime_provenance", {})
     provenance.setdefault("created_by_tool", tool_identity)
     provenance["last_mutated_by_tool"] = tool_identity
+    if path.name == "state.yaml" and path.parent.parent.name == ".ai-workflow":
+        root = path.parents[2]
+        try:
+            snapshot = continuity_snapshot(root)
+        except WorkflowError:
+            # Dedicated candidate and verification gates report unsafe trees with
+            # their more precise diagnostics; do not hide them behind a state-save failure.
+            snapshot = {}
+        state["repository_context"] = {
+            **state.get("repository_context", {}),
+            **repository_context(root),
+            **snapshot,
+        }
     state["schema_version"] = CURRENT_SCHEMA_VERSION
     state["revision"] = expected_revision + 1
     state["state_checksum"] = state_checksum(state)
@@ -1722,36 +1764,6 @@ def contains_marker(text: str, marker: str) -> bool:
     return any(variant.lower() in text.lower() for variant in variants)
 
 
-def require_artifact_content(name: str, path: Path) -> None:
-    text = path.read_text(encoding="utf-8")
-    if name == "clarification_questions":
-        for marker in ("question", "missing", "assumption", "acceptance"):
-            if not contains_marker(text, marker):
-                raise WorkflowError(
-                    f"Clarification evidence must cover questions, missing details, "
-                    f"assumptions, and acceptance criteria; missing: {marker}"
-                )
-    elif name == "requirement_confirmation":
-        if not (
-            contains_marker(text, "user")
-            and (contains_marker(text, "confirmed") or contains_marker(text, "approve"))
-        ):
-            raise WorkflowError(
-                "Requirement confirmation evidence must record explicit user confirmation."
-            )
-    elif name == "prototype":
-        for marker in ("preview", "scope", "how to inspect"):
-            if not contains_marker(text, marker):
-                raise WorkflowError(f"Prototype evidence must identify: {marker}")
-    elif name == "user_feedback":
-        if not (
-            contains_marker(text, "user")
-            and contains_marker(text, "feedback")
-            and (contains_marker(text, "approve") or contains_marker(text, "approved"))
-        ):
-            raise WorkflowError("User feedback evidence must record explicit user approval.")
-
-
 def cmd_version(args: argparse.Namespace) -> int:
     return invoke_lifecycle_command("cmd_version", sys.modules[__name__], args)
 
@@ -1766,7 +1778,8 @@ def cmd_init(args: argparse.Namespace) -> None:
 
 def cmd_start(args: argparse.Namespace) -> None:
     invoke_lifecycle_command("cmd_start", sys.modules[__name__], args)
-
+def cmd_prepare_turn(args: argparse.Namespace) -> int:
+    return invoke_lifecycle_command("cmd_prepare_turn", sys.modules[__name__], args)
 
 def cmd_assess_risk(args: argparse.Namespace) -> None:
     invoke_risk_command("cmd_assess_risk", sys.modules[__name__], args)
@@ -1901,7 +1914,10 @@ def cmd_record_artifact(args: argparse.Namespace) -> None:
 
 def cmd_record_artifact_bundle(args: argparse.Namespace) -> None:
     invoke_artifact_command("cmd_record_artifact_bundle", sys.modules[__name__], args)
+def cmd_archive_documents(args: argparse.Namespace) -> None: invoke_archive_command("cmd_archive_documents", sys.modules[__name__], args)
 
+def cmd_record_requirement_confirmation(args: argparse.Namespace) -> None:
+    invoke_delivery_command("cmd_record_requirement_confirmation", sys.modules[__name__], args)
 
 def cmd_record_user_feedback(args: argparse.Namespace) -> None:
     invoke_delivery_command("cmd_record_user_feedback", sys.modules[__name__], args)
@@ -1938,6 +1954,10 @@ def cmd_decide(args: argparse.Namespace) -> None:
 
 def cmd_submit_gate_review(args: argparse.Namespace) -> None:
     invoke_review_command("cmd_submit_gate_review", sys.modules[__name__], args)
+
+
+def cmd_check_review_evidence(args: argparse.Namespace) -> None:
+    invoke_review_command("cmd_check_review_evidence", sys.modules[__name__], args)
 
 
 def cmd_record_meeting(args: argparse.Namespace) -> None:
@@ -1985,6 +2005,8 @@ def main() -> int:
                         )
                 elif args.command not in {"init", "start", "repair-state"}:
                     _, current = load_state(root, args.id)
+                if current is not None and args.command not in CONTINUITY_BYPASS_COMMANDS and not (args.command == "record-delivery-confirmation" and args.verdict == "request_changes"):
+                    require_project_continuity(root, current)
                 require_mutation_runtime_health(current)
                 result = args.func(args)
         else:

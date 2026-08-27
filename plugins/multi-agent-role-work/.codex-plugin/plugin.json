@@ -1,6 +1,6 @@
 {
   "name": "multi-agent-role-work",
-  "version": "2.7.0+codex.20260820140529",
+  "version": "2.7.0+codex.20260827134901",
   "description": "Keeps long-running project work aligned with the user's goal while handling delivery rigor internally.",
   "author": {
     "name": "progressrdx",
@@ -21,18 +21,22 @@
   "interface": {
     "displayName": "Project Compass",
     "shortDescription": "Keeps every change aligned with your goal.",
-    "longDescription": "Describe what you want to achieve and Project Compass keeps that goal visible while the work moves forward. It shows whether the project is still on track, calls out changes that could shift the outcome, asks only for decisions that matter, and checks the final result against the goal. Delivery mechanics stay in the background unless you explicitly ask for technical diagnostics.",
+    "longDescription": "Describe what you want to achieve and Project Compass keeps that goal visible across follow-up questions, fixes, testing, and delivery. It checks runtime and project-state continuity before changes, archives replaced documents away from the current baseline, runs machine-observable QA before asking for acceptance, calls out changes that could shift the outcome, and asks only for decisions that matter. Delivery mechanics stay in the background unless you explicitly ask for technical diagnostics.",
     "developerName": "progressrdx",
     "category": "Productivity",
     "capabilities": [
       "Keeps the original goal visible",
+      "Keeps active-project follow-ups visibly routed",
       "Shows whether the project is still on track",
+      "Checks runtime and project-state continuity before edits",
       "Flags changes that could shift the outcome",
       "Asks before meaningful goal or scope changes",
       "Tracks progress through real outcomes",
       "Makes previews and results easy to inspect",
       "Checks the final result against the goal",
+      "Runs machine-observable QA before user acceptance",
       "Remembers decisions across Codex tasks",
+      "Archives superseded documents without losing history",
       "Surfaces only decisions that need the user"
     ],
     "defaultPrompt": [

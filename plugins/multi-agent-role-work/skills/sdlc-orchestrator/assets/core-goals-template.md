@@ -1,20 +1,20 @@
-# User-confirmed core goals
+# 用户确认的核心目标
 
-## User confirmation
+## 用户确认
 
-- Approving user:
-- Confirmation evidence:
-- Confirmation date:
+- 确认人：
+- 确认依据：
+- 确认日期：
 
-## Core outcomes
+## 核心结果
 
-- `GOAL-001`:
-- `GOAL-002`:
+- `GOAL-001`：
+- `GOAL-002`：
 
-Each goal states user value and observable success. Do not encode a mock, prototype, framework, or implementation shortcut as the outcome.
+每个目标都要写清用户价值和可观察的成功结果。不要把演示、原型、框架或实现捷径写成最终目标。
 
-## Scope integrity
+## 范围完整性
 
-- What must not be silently reduced:
-- Known non-goals:
-- Any later reduction requires a separate user-approved `SC-*` record naming the affected `GOAL-*` or `AC-*`.
+- 不得静默缩减的内容：
+- 已知非目标：
+- 后续任何缩减都必须有用户单独批准的 `SC-*` 记录，并标明受影响的 `GOAL-*` 或 `AC-*`。

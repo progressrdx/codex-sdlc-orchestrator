@@ -12,6 +12,7 @@
 - Product: design preserves approved intent and does not reduce a core goal; any proposed reduction has explicit user-approved scope-change evidence.
 - Engineering: design covers interfaces, data, failure behavior, compatibility, rollout, and identified risks as applicable.
 - Testing: test plan traces every acceptance criterion and the design exposes enough evidence to verify it.
+- For materially visual work: product direction is explicit, engineering binds the exact direction output, and testing covers rendered states, representative viewports, accessibility, responsive behavior, and objective visual quality.
 - All roles: if preview is enabled, the next step is a prototype or MVP suitable for user feedback; otherwise the risk assessment contains a credible reason that preview is unnecessary.
 
 ## Acceptance
@@ -20,4 +21,5 @@
 - Engineering: implementation matches design; checks, deviations, migration, and rollback evidence are complete.
 - Testing: every Must criterion has an independent current-source verdict; the final user journey passes launch, core outcomes, semantic content, interactions, external links, UI quality, release hygiene, and source-of-truth checks; no blocker remains.
 - Engineering: the reviewed source fingerprint matches the committed revision under test; no post-verification source change is hidden.
+- For materially visual work: the current rendered build matches the selected direction, objective visual and interaction checks have current screenshot/browser evidence, and subjective acceptance is left to the user rather than inferred by a reviewer.
 - All roles: when preview was enabled, user feedback was explicitly approved or requested changes were incorporated and re-reviewed.

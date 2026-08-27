@@ -1,27 +1,27 @@
-# Final user-journey verification
+# 最终用户路径核验
 
-## Source under test
+## 被核验的版本
 
-- Git commit:
-- Source tree fingerprint:
-- Build command and result:
-- Test command and result:
+- Git 提交：
+- 源码树指纹：
+- 构建命令与结果：
+- 测试命令与结果：
 
-## Required checks
+## 必须核验的项目
 
-- `launch`: pass/fail — actual launch path and evidence
-- `core_outcomes`: pass/fail — each confirmed goal exercised
-- `content_semantics`: pass/fail — values, labels, missing/unsupported states
-- `interactions`: pass/fail — controls and failure recovery
-- `external_links`: pass/fail — each destination actually opened
-- `ui_quality`: pass/fail — truncation, overflow, layout, accessibility
-- `release_hygiene`: pass/fail — no mock selectors, debug controls, placeholders
-- `source_truth`: pass/fail — displayed data verified against the intended source
+- `launch`：通过/失败——按普通用户实际会采用的方式启动，并保留证据
+- `core_outcomes`：通过/失败——逐项实际体验每个已确认目标
+- `content_semantics`：通过/失败——核对数值、文案、缺失状态和不支持状态
+- `interactions`：通过/失败——操作控件并验证失败恢复
+- `external_links`：通过/失败——实际打开每个外部目标
+- `ui_quality`：通过/失败——检查截断、溢出、布局和无障碍
+- `release_hygiene`：通过/失败——不存在演示选择器、调试控件和占位内容
+- `source_truth`：通过/失败——展示的数据与预期来源一致
 
-## Defects and criterion verdicts
+## 缺陷与验收结论
 
-- Defects:
-- `AC-*` verdicts:
-- Regression reruns:
+- 缺陷：
+- `AC-*` 结论：
+- 回归复测：
 
-Screenshots and source inspection may supplement this report but cannot replace executed evidence.
+截图和源码检查只能作为补充，不能替代真实执行证据。

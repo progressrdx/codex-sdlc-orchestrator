@@ -1,17 +1,35 @@
-# Review record: <gate> / <role>
+评审结论: approve
+<!-- 驳回时将 approve 改为 reject；保留上方为单独一行，不要添加其他值或否定词。 -->
 
-## Inputs reviewed
+# 复核记录：<检查点> / <角色>
 
-## Findings
+## 分配的专业视角
 
-| ID | Severity | Requirement/evidence | Finding | Required action |
+- 角色：
+- 检查点：
+- 被复核基线/源码：
+
+## 主张与证据
+
+| 关键主张 | 已检查证据 | 缺口或矛盾 | 影响 |
+|---|---|---|---|
+
+## 已复核材料
+
+## 发现
+
+| ID | 严重程度 | 对应需求/证据 | 发现 | 必须采取的行动 |
 |---|---|---|---|---|
 
-## Questions and disagreements
+## 问题与分歧
 
-## Verdict
+- 属于已证实违约、必需证据缺失，还是非阻塞偏好：
+- 对实质发现：责任角色、改变结论所需的最小证据/修正：
 
-`approve` or `reject`
+## 结论
 
-## Verdict rationale
+`approve`（通过）或 `reject`（拒绝）
 
+## 结论理由
+
+按当前检查点判断：PRD 核对目标与决定是否明确，readiness 核对方案和验证策略是否足以实施；acceptance 必须核对实际行为是否实现核心用户目标。不能只因为文档齐全、页面可打开或内部流程完成就判定通过，也不能仅因设计阶段尚无最终代码而拒绝。

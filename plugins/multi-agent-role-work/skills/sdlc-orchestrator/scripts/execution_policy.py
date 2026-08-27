@@ -22,10 +22,13 @@ from delivery_candidate import (
     DeliveryCandidate,
     changed_manifest_paths,
     filesystem_manifest,
+    git_status_paths,
     normalize_relative_paths,
+    path_is_relevant,
     prepare_output_subtrees,
     validate_output_subtrees,
 )
+from source_policy import SourcePolicyError, workspace_binding
 from state_store import WorkflowError, atomic_write_text
 
 
@@ -78,17 +81,187 @@ EXECUTION_POLICIES = {
     },
 }
 
+CONTINUITY_IGNORED_PARTS = frozenset(
+    {
+        ".ai-workflow", ".git", ".mypy_cache", ".pytest_cache", "__pycache__",
+        "build", "corpus", "data", "dist", "docs", "logs", "models", "node_modules",
+        "tools", "transcripts", "vendor",
+    }
+)
+
+
+def _git_head(root: Path) -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(root), "rev-parse", "--verify", "HEAD^{commit}"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+
+
+def continuity_snapshot(root: Path) -> dict[str, str]:
+    """Capture the product workspace baseline independently of mutable Git status."""
+    try:
+        binding = workspace_binding(root, tuple(sorted(CONTINUITY_IGNORED_PARTS)))
+    except SourcePolicyError as exc:
+        raise WorkflowError(f"Unable to capture project continuity baseline: {exc}") from exc
+    return {
+        "continuity_workspace_sha256": str(binding["source_tree_sha256"]),
+        "continuity_git_head": _git_head(root),
+    }
+
+
+def _committed_paths_since(root: Path, previous_head: str, current_head: str) -> list[str]:
+    if not previous_head or not current_head or previous_head == current_head:
+        return []
+    try:
+        output = subprocess.check_output(
+            ["git", "-C", str(root), "diff", "--name-only", previous_head, current_head],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    ignored = tuple(sorted(CONTINUITY_IGNORED_PARTS))
+    return sorted(
+        path
+        for path in output.splitlines()
+        if path_is_relevant(path, ignored)
+    )
+
+
+def source_activity_after_state(root: Path, state: dict[str, Any]) -> list[str]:
+    """Return product workspace changes since the last recorded workflow baseline.
+
+    Generated data, evidence, dependencies, and caches are excluded. Active role work is
+    allowed to complete and establish its own post-work baseline.
+    """
+    active_work = any(
+        isinstance(item, dict) and item.get("status") in {"dispatched", "running"}
+        for item in state.get("work_items", {}).values()
+    )
+    if active_work:
+        return []
+    try:
+        current = continuity_snapshot(root)
+    except WorkflowError:
+        return []
+    recorded = state.get("repository_context", {})
+    previous_workspace = str(recorded.get("continuity_workspace_sha256", ""))
+    if not previous_workspace or previous_workspace == current["continuity_workspace_sha256"]:
+        return []
+    try:
+        changed = set(
+            git_status_paths(root, excluded_paths=tuple(sorted(CONTINUITY_IGNORED_PARTS)))
+        )
+    except CandidateError:
+        changed = set()
+    changed.update(
+        _committed_paths_since(
+            root,
+            str(recorded.get("continuity_git_head", "")),
+            current["continuity_git_head"],
+        )
+    )
+    return sorted(changed) or ["<workspace content changed>"]
+
+
+def require_project_continuity(root: Path, state: dict[str, Any]) -> None:
+    paths = source_activity_after_state(root, state)
+    if paths:
+        raise WorkflowError(
+            "Project continuity blocked: source files changed after the last workflow update "
+            "without active role ownership. Reopen or reconcile the earliest affected stage "
+            "first: " + ", ".join(paths)
+        )
+
+
+def _git_baseline_status(git: str, root: Path) -> str:
+    completed = subprocess.run(
+        [git, "-C", str(root), "rev-parse", "--verify", "HEAD"],
+        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return "committed" if completed.returncode == 0 else "missing"
+
+
+def ensure_git_repository(root: Path) -> dict[str, str]:
+    """Use an existing Git repository or safely initialize one for a new project.
+
+    This never creates a commit, changes a branch, or touches remotes. A project
+    nested inside an existing repository inherits that repository instead of
+    creating a nested one.
+    """
+    git = shutil.which("git")
+    if not git:
+        return {"version_control": "unavailable", "version_control_note": "Git 未安装"}
+    try:
+        top = subprocess.check_output(
+            [git, "-C", str(root), "rev-parse", "--show-toplevel"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        return {
+            "version_control": "git",
+            "version_control_status": "existing",
+            "git_baseline_status": _git_baseline_status(git, Path(top).resolve()),
+            "git_root": str(Path(top).resolve()),
+        }
+    except (OSError, subprocess.CalledProcessError):
+        pass
+
+    commands = ([git, "init", "-b", "main", str(root)], [git, "init", str(root)])
+    last_error = ""
+    for command in commands:
+        completed = subprocess.run(
+            command,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if completed.returncode == 0:
+            return {
+                "version_control": "git",
+                "version_control_status": "initialized",
+                "git_baseline_status": "missing",
+                "git_root": str(root.resolve()),
+            }
+        last_error = (completed.stderr or completed.stdout).strip()
+    return {
+        "version_control": "unavailable",
+        "version_control_note": last_error or "Git 初始化失败",
+    }
+
 
 def repository_context(root: Path) -> dict[str, str]:
+    context: dict[str, str] = {}
+    git = shutil.which("git")
+    if not git:
+        return {"version_control": "unavailable"}
+    try:
+        top = subprocess.check_output(
+            [git, "-C", str(root), "rev-parse", "--show-toplevel"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        context.update({"version_control": "git", "git_root": str(Path(top).resolve())})
+        context["git_baseline_status"] = _git_baseline_status(git, Path(top).resolve())
+    except (OSError, subprocess.CalledProcessError):
+        return {"version_control": "not_initialized"}
     try:
         branch = subprocess.check_output(
-            ["git", "-C", str(root), "symbolic-ref", "--quiet", "--short", "HEAD"],
+            [git, "-C", str(root), "symbolic-ref", "--quiet", "--short", "HEAD"],
             text=True,
             stderr=subprocess.DEVNULL,
         ).strip()
     except (OSError, subprocess.CalledProcessError):
         branch = ""
-    return {"git_branch": branch} if branch else {}
+    if branch:
+        context["git_branch"] = branch
+    return context
 
 
 def _timestamp() -> str:

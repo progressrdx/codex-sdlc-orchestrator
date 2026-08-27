@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from typing import Any
 
 from command_runtime import invoke as invoke_bound
@@ -29,6 +31,15 @@ def next_feedback_id(state: dict[str, Any]) -> str:
     return f"UFB-{max(numbers, default=0) + 1:03d}"
 
 
+def next_requirement_confirmation_id(state: dict[str, Any]) -> str:
+    numbers = []
+    for record in state.get("requirement_confirmation_records", []):
+        match = re.fullmatch(r"RCF-(\d+)", str(record.get("id", "")))
+        if match:
+            numbers.append(int(match.group(1)))
+    return f"RCF-{max(numbers, default=0) + 1:03d}"
+
+
 def next_delivery_confirmation_id(state: dict[str, Any]) -> str:
     numbers = []
     for record in state.get("delivery_confirmation_records", []):
@@ -36,6 +47,102 @@ def next_delivery_confirmation_id(state: dict[str, Any]) -> str:
         if match:
             numbers.append(int(match.group(1)))
     return f"DCF-{max(numbers, default=0) + 1:03d}"
+
+
+def _require_structured_verdict(
+    evidence_path: Path,
+    field_names: tuple[str, ...],
+    expected: str,
+) -> None:
+    text = evidence_path.read_text(encoding="utf-8")
+    field_pattern = "|".join(re.escape(field) for field in field_names)
+    verdicts = re.findall(
+        rf"(?im)^\s*(?:{field_pattern})\s*:\s*(approve|reject|request_changes)\s*$",
+        text,
+    )
+    if len(verdicts) != 1 or verdicts[0] != expected:
+        raise WorkflowError(
+            f"Evidence must contain exactly one {field_names[0]}: {expected} line."
+        )
+
+
+def cmd_record_requirement_confirmation(args: argparse.Namespace) -> None:
+    """Record an explicit user requirement verdict; prose evidence cannot infer approval."""
+    root = repository_root(args.root)
+    path, state = load_state(root, args.id)
+    workflow = state["workflow"]
+    if workflow["current_stage"] != "requirement_confirmation":
+        raise WorkflowError(
+            "Requirement confirmation can only be recorded during requirement_confirmation."
+        )
+    evidence_path, relative = repository_evidence_path(
+        root, args.evidence, minimum_chars=MIN_DOCUMENT_CHARS
+    )
+    require_markdown_structure(evidence_path)
+    _require_structured_verdict(
+        evidence_path, ("confirmation_verdict", "确认结论"), args.verdict
+    )
+    evidence_hash = content_sha256(evidence_path)
+    for other_name, other in state.get("artifacts", {}).items():
+        if other_name != "requirement_confirmation" and other.get("path") == str(relative):
+            raise WorkflowError(f"Requirement confirmation evidence is already used by {other_name}.")
+
+    confirmation_id = next_requirement_confirmation_id(state)
+    record = {
+        "id": confirmation_id,
+        "verdict": args.verdict,
+        "summary": args.summary.strip(),
+        "evidence": str(relative),
+        "evidence_sha256": evidence_hash,
+        "at": now(),
+    }
+    state.setdefault("requirement_confirmation_records", []).append(record)
+    if args.verdict == "approve":
+        state.setdefault("artifacts", {})["requirement_confirmation"] = {
+            "path": str(relative),
+            "status": "ready",
+            "evidence_sha256": evidence_hash,
+            "updated_at": now(),
+            "notes": f"Explicit user requirement approval recorded as {confirmation_id}.",
+        }
+        state["core_goals"] = {}
+        state["core_outcomes"] = {}
+        state["scope_changes"] = []
+        invalidated = []
+        for gate in ARTIFACT_INVALIDATES_GATES["requirement_confirmation"]:
+            if gate in state.get("decisions", {}):
+                del state["decisions"][gate]
+                invalidated.append(gate)
+        invalidated_meetings = invalidate_gate_meetings(
+            state,
+            ARTIFACT_INVALIDATES_GATES["requirement_confirmation"],
+            "Requirement confirmation changed",
+        )
+        add_history(state, "requirement_confirmation_approved", confirmation_id)
+        if invalidated:
+            add_history(state, "decisions_invalidated", f"requirement_confirmation:{','.join(invalidated)}")
+        if invalidated_meetings:
+            add_history(state, "meetings_invalidated", ",".join(invalidated_meetings))
+        save_state(path, state)
+        print(f"Recorded {confirmation_id}: user approved the requirement baseline")
+        return
+
+    old_stage, invalidated_artifacts, invalidated_meetings = rewind_workflow(
+        state,
+        "clarification",
+        f"Requirement confirmation {confirmation_id}: reject",
+    )
+    add_history(
+        state,
+        "requirement_confirmation_rejected",
+        f"{confirmation_id}:{old_stage}->clarification",
+    )
+    if invalidated_artifacts:
+        add_history(state, "artifacts_invalidated", ",".join(invalidated_artifacts))
+    if invalidated_meetings:
+        add_history(state, "meetings_invalidated", ",".join(invalidated_meetings))
+    save_state(path, state)
+    print(f"Recorded {confirmation_id}: user rejected the requirement baseline; rewound to clarification")
 
 
 def cmd_record_user_feedback(args: argparse.Namespace) -> None:
@@ -48,6 +155,9 @@ def cmd_record_user_feedback(args: argparse.Namespace) -> None:
         root, args.evidence, minimum_chars=MIN_DOCUMENT_CHARS
     )
     require_markdown_structure(evidence_path)
+    _require_structured_verdict(
+        evidence_path, ("feedback_verdict", "反馈结论"), args.verdict
+    )
     evidence_hash = content_sha256(evidence_path)
     for other_name, other in state.get("artifacts", {}).items():
         if other_name != "user_feedback" and other.get("path") == str(relative):
@@ -120,10 +230,9 @@ def cmd_record_delivery_confirmation(args: argparse.Namespace) -> None:
         root, args.evidence, minimum_chars=MIN_DOCUMENT_CHARS
     )
     require_markdown_structure(evidence_path)
-    evidence_text = evidence_path.read_text(encoding="utf-8")
-    for marker in ("user", args.verdict):
-        if not contains_marker(evidence_text, marker):
-            raise WorkflowError(f"Delivery confirmation evidence must identify: {marker}")
+    _require_structured_verdict(
+        evidence_path, ("delivery_verdict", "交付结论"), args.verdict
+    )
     evidence_hash = content_sha256(evidence_path)
     confirmation_id = next_delivery_confirmation_id(state)
     record = {

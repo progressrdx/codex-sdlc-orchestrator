@@ -278,6 +278,64 @@ class WorkItemCliTests(unittest.TestCase):
             recorded["handoff_budget_override"]["evidence_sha256"],
         )
 
+    def test_visual_direction_supports_three_role_design_handoff(self) -> None:
+        state = self.state()
+        state["workflow"]["current_stage"] = "design"
+        workflow_module.save_state(self.state_path, state)
+
+        self.begin("WI-design-product-001")
+        direction = self.output("visual-direction.md")
+        self.run_cli(
+            "complete-work",
+            "--work-item-id",
+            "WI-design-product-001",
+            "--output",
+            f"visual_direction={direction.relative_to(self.root)}",
+        )
+        product_item = self.state()["work_items"]["WI-design-product-001"]
+        direction_hash = hashlib.sha256(direction.read_bytes()).hexdigest()
+        self.assertEqual(direction_hash, product_item["output_hashes"]["visual_direction"])
+        require_completed_output(
+            self.root,
+            self.state(),
+            "WI-design-product-001",
+            "design",
+            "product",
+            "visual_direction",
+            direction_hash,
+            str(direction.relative_to(self.root)),
+        )
+
+        for role in ("engineering", "testing"):
+            self.run_cli(
+                "begin-work",
+                "--work-item-id",
+                f"WI-design-{role}-001",
+                "--role",
+                role,
+                "--actor-ref",
+                f"agent:design-{role}",
+                "--deadline-at",
+                self.deadline(),
+            )
+        self.assertEqual(3, len(self.state()["work_items"]))
+        self.assertTrue(
+            all("handoff_budget_override" not in item for item in self.state()["work_items"].values())
+        )
+
+        direction.write_text("changed visual direction\n", encoding="utf-8")
+        with self.assertRaises(WorkflowError):
+            require_completed_output(
+                self.root,
+                self.state(),
+                "WI-design-product-001",
+                "design",
+                "product",
+                "visual_direction",
+                direction_hash,
+                str(direction.relative_to(self.root)),
+            )
+
     def test_superseded_history_does_not_permanently_consume_handoff_budget(self) -> None:
         for number in range(1, 4):
             self.begin(f"WI-intake-product-{number:03d}")

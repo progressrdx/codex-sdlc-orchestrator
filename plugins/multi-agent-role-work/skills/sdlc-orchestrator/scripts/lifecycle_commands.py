@@ -67,12 +67,15 @@ def cmd_init(args: argparse.Namespace) -> None:
             f"Workflow already exists: {workflow_id}. Use activate or reopen; choose a new ID to start over."
         )
 
+    version_control = ensure_git_repository(root)
+    language = communication_language(args.request)
     docs_dir = root / "docs" / "requirements" / workflow_id
     docs_dir.mkdir(parents=True, exist_ok=True)
     request_path = docs_dir / "00-original-request.md"
+    request_heading = "原始需求" if language == "zh-CN" else "Original request"
     atomic_write_text(
         request_path,
-        f"# Original request: {args.title}\n\n{args.request.strip()}\n",
+        f"# {request_heading}：{args.title}\n\n{args.request.strip()}\n",
     )
     timestamp = now()
     tool_identity = current_tool_identity()
@@ -107,6 +110,7 @@ def cmd_init(args: argparse.Namespace) -> None:
         "human_approvals": {},
         "meetings": [],
         "risk_assessment": {"status": "pending"},
+        "requirement_confirmation_records": [],
         "user_feedback_records": [],
         "delivery_confirmation_records": [],
         "risk_reports": [],
@@ -119,7 +123,8 @@ def cmd_init(args: argparse.Namespace) -> None:
         "source_revision": {},
         "verification_snapshot": {},
         "journey_validation": {},
-        "repository_context": repository_context(root),
+        "repository_context": {**repository_context(root), **version_control},
+        "user_preferences": {"language": language},
         "work_items": {},
         "stage_submissions": {},
         "runtime_provenance": {
@@ -148,6 +153,74 @@ def cmd_start(args: argparse.Namespace) -> None:
     print()
     print("Project:")
     print_project_view(project_view_payload(root, state))
+
+
+def cmd_prepare_turn(args: argparse.Namespace) -> int:
+    root = repository_root(args.root)
+    path, state = load_state(root, args.id)
+    workflow = state["workflow"]
+    if workflow["status"] != "active":
+        raise WorkflowError(
+            f"Workflow status is {workflow['status']}; prepare-turn requires an active project."
+        )
+
+    changed_paths = source_activity_after_state(root, state)
+    version_control = ensure_git_repository(root)
+    current_identity = current_tool_identity()
+    previous_identity = state.get("runtime_provenance", {}).get("last_mutated_by_tool", {})
+    payload: dict[str, Any] = {
+        "workflow_id": workflow["id"],
+        "status": "reconciliation_required" if changed_paths else "ready",
+        "stage": workflow["current_stage"],
+        "version_control": version_control,
+        "runtime_changed": bool(
+            previous_identity and runtime_identity_changed(previous_identity, current_identity)
+        ),
+        "unrecorded_source_paths": changed_paths,
+    }
+    if changed_paths:
+        payload["message"] = (
+            "Source files changed after the last workflow state update without an active role "
+            "attempt. Reconcile or reopen the earliest affected stage before more product work."
+        )
+        if args.json:
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+        else:
+            print("Project continuity: reconciliation required")
+            print(payload["message"])
+            for item in changed_paths:
+                print(f"- {item}")
+        return 2
+
+    observed_context = {
+        **state.get("repository_context", {}),
+        **repository_context(root),
+        **version_control,
+        **continuity_snapshot(root),
+    }
+    state_changed = observed_context != state.get("repository_context", {}) or payload["runtime_changed"]
+    if state_changed:
+        state["repository_context"] = observed_context
+        details: list[str] = []
+        if payload["runtime_changed"]:
+            details.append(
+                f"runtime {previous_identity.get('version', 'unknown')} -> {current_identity['version']}"
+            )
+        if version_control.get("version_control_status") == "initialized":
+            details.append("initialized Git protection")
+        add_history(state, "turn_prepared", "; ".join(details) or "refreshed project continuity")
+        save_state(path, state)
+        payload["state_revision"] = state["revision"]
+    else:
+        payload["state_revision"] = state["revision"]
+    payload["message"] = "Project continuity checks passed."
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        print("Project continuity: ready")
+        print(f"Version protection: {version_control.get('version_control', 'unavailable')}")
+        print(f"Workflow stage: {workflow['current_stage']}")
+    return 0
 
 
 def cmd_status(args: argparse.Namespace) -> None:
@@ -461,7 +534,7 @@ PROJECT_RESULT_LABELS = {
 }
 
 PROJECT_ACTION_LABELS = {
-    "prototype": ("查看可体验预览", "preview"),
+    "prototype": ("查看方向预览（不代表核心功能已完成）", "preview"),
     "implementation": ("查看实现结果", "implementation"),
     "verification_report": ("查看质量报告", "quality_report"),
     "journey_report": ("查看核心流程验证", "journey_report"),
@@ -564,6 +637,9 @@ def _resolved_project_issues(state: dict[str, Any]) -> list[dict[str, str]]:
     for issue in state.get("issues", []):
         if issue.get("status") != "resolved":
             continue
+        resolution_evidence = str(issue.get("resolution_evidence", ""))
+        if "/_archive/" in resolution_evidence:
+            continue
         resolved.append(
             (
                 str(issue.get("resolved_at", "")),
@@ -615,6 +691,13 @@ def _project_decisions(root: Path, state: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(decisions))
 
 
+def _journey_passed(state: dict[str, Any]) -> bool:
+    journey = state.get("journey_validation", {})
+    checks = journey.get("checks", {})
+    required = JOURNEY_PROFILES.get(str(journey.get("profile", "")), ())
+    return bool(required) and all(checks.get(check) == "pass" for check in required)
+
+
 def _project_quality(root: Path, state: dict[str, Any]) -> dict[str, Any]:
     issues = outstanding_issues(state)
     blockers = [
@@ -628,9 +711,7 @@ def _project_quality(root: Path, state: dict[str, Any]) -> dict[str, Any]:
         if verdicts.get(criterion_id, {}).get("verdict") in {"pass", "not_applicable"}
     )
     journey_checks = state.get("journey_validation", {}).get("checks", {})
-    journey_passed = bool(journey_checks) and all(
-        result in {"pass", "not_applicable"} for result in journey_checks.values()
-    )
+    journey_passed = _journey_passed(state)
     verification_ready = artifact_ready(root, state, "verification_report")
     if blockers:
         summary = f"发现 {len(blockers)} 个需要先处理的重要问题"
@@ -679,10 +760,24 @@ def _project_alignment(
         if item.get("status") == "approved"
     ]
 
-    if workflow["status"] == "completed":
+    stage = workflow["current_stage"]
+    journey_passed = _journey_passed(state)
+    verification_ready = artifact_ready(root, state, "verification_report")
+    delivery_confirmed = artifact_ready(root, state, "delivery_confirmation")
+    completion_verified = (
+        journey_passed
+        if workflow["mode"] == "strict"
+        else verification_ready and delivery_confirmed
+    )
+
+    if workflow["status"] == "completed" and completion_verified:
         status = "completed"
         label = "已按目标完成"
         summary = "最终结果已经按记录的目标和完成标准核对。"
+    elif workflow["status"] == "completed":
+        status = "attention"
+        label = "缺少真实结果核验"
+        summary = "流程记录已经结束，但缺少完整的真实用户路径证据，不能宣称核心目标已兑现。"
     elif risk_status != "current":
         status = "defining"
         label = "正在确认方向"
@@ -705,6 +800,18 @@ def _project_alignment(
             if reason
             else "已根据你确认的变化重新调整后续工作。"
         )
+    elif stage in {"prototype", "user_feedback"}:
+        status = "on_track"
+        label = "方向预览中"
+        summary = "当前成果只用于判断产品方向，尚不能证明核心功能已经实现。"
+    elif stage == "implementation":
+        status = "on_track"
+        label = "实现中，等待验证"
+        summary = "当前实现围绕目标推进，但核心价值仍需通过真实用户路径验证。"
+    elif stage in {"verification", "acceptance", "delivery_confirmation"}:
+        status = "on_track"
+        label = "正在核对真实结果"
+        summary = "正在用实际启动路径和核心用户任务检查成果是否真正兑现目标。"
     else:
         status = "on_track"
         label = "与目标一致"
@@ -735,6 +842,30 @@ def project_view_payload(root: Path, state: dict[str, Any]) -> dict[str, Any]:
         next_action = "等待你的决定后继续推进。"
     else:
         next_action = "我会继续推进，并在出现可体验结果或需要你判断时更新你。"
+    repository = state.get("repository_context", {})
+    version_control = repository.get("version_control")
+    if version_control == "git":
+        if repository.get("git_baseline_status") == "missing":
+            version_protection = {
+                "status": "initialized_without_baseline",
+                "summary": "Git 已初始化，但尚无基线提交；现有内容暂时不能通过版本历史恢复。",
+            }
+        else:
+            version_protection = {
+                "status": "enabled",
+                "summary": "Git 版本保护已开启；不会自动覆盖现有分支、远程地址或未提交改动。",
+            }
+    else:
+        version_protection = {
+            "status": "unavailable",
+            "summary": "Git 版本保护尚未开启，需要先解决本机 Git 环境问题。",
+        }
+    recent_results = _recent_project_results(root, state)
+    stage_summary = {
+        "completed": recent_results[:3] or ["已记录项目目标"],
+        "current": PROJECT_FOCUS.get(stage, "正在推进当前工作"),
+        "decision": decisions[0] if decisions else None,
+    }
     return {
         "project_id": workflow["id"],
         "title": workflow["title"],
@@ -744,7 +875,9 @@ def project_view_payload(root: Path, state: dict[str, Any]) -> dict[str, Any]:
         "acceptance": str(baseline.get("acceptance", "")).strip() or None,
         "current_focus": PROJECT_FOCUS.get(stage, "正在推进当前工作"),
         "core_results": _core_project_results(root, state),
-        "recent_results": _recent_project_results(root, state),
+        "recent_results": recent_results,
+        "stage_summary": stage_summary,
+        "version_protection": version_protection,
         "available_actions": _project_actions(root, state),
         "resolved_issues": _resolved_project_issues(state),
         "quality": _project_quality(root, state),
@@ -762,6 +895,7 @@ def print_project_view(payload: dict[str, Any]) -> None:
     alignment = payload["alignment"]
     print(f"项目方向：[{alignment['label']}] {alignment['summary']}")
     print(f"目标保护：{alignment['protection']}")
+    print(f"版本保护：{payload['version_protection']['summary']}")
     if payload.get("out_of_scope"):
         print(f"暂不包含：{payload['out_of_scope']}")
     if payload.get("acceptance"):
@@ -788,10 +922,12 @@ def print_project_view(payload: dict[str, Any]) -> None:
     for detail in payload["quality"]["details"]:
         print(f"- {detail}")
     if payload["needs_your_decision"]:
+        print("是否需要你操作：是")
         print("需要你决定：")
         for decision in payload["needs_your_decision"]:
             print(f"- {decision}")
     else:
+        print("是否需要你操作：否，系统会继续推进")
         print("需要你决定：暂无")
     print(f"下一步：{payload['next_action']}")
 

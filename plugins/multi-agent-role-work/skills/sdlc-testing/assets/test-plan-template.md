@@ -1,25 +1,47 @@
-# Test plan: <title>
+# 测试计划：<标题>
 
-## 1. Scope and risk assessment
+## 1. 范围与风险评估
 
-## 2. Test environments, fixtures, and tools
+| 风险 ID | 失败影响 | 可能性 | 可探测性/可逆性 | 优先级 | 验证策略 |
+|---|---|---|---|---|---|
 
-## 3. Acceptance-criteria traceability
+## 2. 测试环境、数据与工具
 
-| Test ID | Requirement/AC | Level | Priority | Expected evidence |
-|---|---|---|---|---|
+- 替身/环境不能证明的关键行为，以及补充真实证据的路径：
 
-## 4. Functional cases
+## 3. 验收标准追踪
 
-## 5. Boundary, negative, and state-transition cases
+| 测试 ID | 对应需求/AC/风险 | 技术与层级 | 测试预言 | 优先级 | 预期证据 |
+|---|---|---|---|---|---|
 
-## 6. Permissions and security cases
+对高风险项说明该层如何暴露故障、预言如何独立于实现；无需在每层重复同一断言。
 
-## 7. Concurrency, retry, and duplicate-operation cases
+## 4. 功能用例
 
-## 8. Non-functional and observability checks
+## 5. 边界、异常与状态变化用例
 
-## 9. Regression scope
+## 6. 权限与安全用例
 
-## 10. Entry/exit criteria and blockers
+## 7. 并发、重试与重复操作用例
 
+## 8. 非功能与可观测性检查
+
+### 视觉与交互质量（适用时）
+
+- 视觉方向路径与 SHA-256：
+- 代表性视口、主题、语言与缩放：
+- 必测状态：加载 / 空 / 局部 / 错误 / 禁用 / 成功 / 权限 / 恢复
+- 层级、一致性、内容、响应式、键盘、焦点、触控、对比度和动效检查：
+- 截图/浏览器证据计划：
+
+## 9. 回归范围
+
+## 10. 进入/退出条件与阻塞项
+
+- 结果矛盾、偶发失败或时间不足时的证据保留与结论边界：
+
+必须包含至少一条按照普通用户真实启动方式完成核心目标的端到端任务；只验证页面能打开或占位结果能生成，不代表目标通过。
+
+## 11. 明确不覆盖的风险
+
+说明未测试内容、原因、可能影响以及改变该决定所需的条件。
