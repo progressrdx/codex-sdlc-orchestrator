@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -21,6 +21,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap
+          python -m pip install -r requirements-test.txt
+      - name: Check Linux sandbox availability
+        # Fail early without disabling AppArmor or weakening immutable verification.
+        run: bwrap --die-with-parent --ro-bind / / --proc /proc --dev /dev /bin/true
       - name: Compile workflow state tool
         run: python -m py_compile plugins/multi-agent-role-work/skills/sdlc-orchestrator/scripts/workflow.py
       - name: Run tests

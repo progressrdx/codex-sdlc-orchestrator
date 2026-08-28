@@ -306,14 +306,7 @@ class PluginPackageTests(unittest.TestCase):
         test intentionally creates a clean, temporary commit from ``PLUGIN`` and
         validates the archive of that commit instead of the project's ``HEAD``.
         """
-        validator = (
-            Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
-            / "skills"
-            / ".system"
-            / "skill-creator"
-            / "scripts"
-            / "quick_validate.py"
-        )
+        validator = ROOT / "tools" / "validate_skill.py"
         self.assertTrue(validator.is_file(), f"Skill validator unavailable: {validator}")
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -325,6 +318,8 @@ class PluginPackageTests(unittest.TestCase):
 
             git_environment = {
                 **os.environ,
+                # Prove the archived package does not require a Codex install.
+                "CODEX_HOME": str(temp_root / "no-codex-installation"),
                 "GIT_AUTHOR_NAME": "Plugin Package Test",
                 "GIT_AUTHOR_EMAIL": "plugin-package-test@example.invalid",
                 "GIT_COMMITTER_NAME": "Plugin Package Test",

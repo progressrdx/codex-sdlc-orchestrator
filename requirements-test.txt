@@ -1,0 +1,2 @@
+# Only the repository's Skill metadata checks need YAML; the plugin is stdlib-only.
+PyYAML==6.0.3
