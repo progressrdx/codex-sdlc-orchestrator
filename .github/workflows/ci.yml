@@ -24,8 +24,20 @@ jobs:
       - name: Install test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes bubblewrap
+          sudo apt-get install --yes bubblewrap apparmor
           python -m pip install -r requirements-test.txt
+      - name: Load scoped AppArmor policy for bubblewrap
+        # Ubuntu 24.04 restricts user namespaces even after bwrap is installed.
+        # Use upstream's ABI-4 policy: bwrap may create its sandbox, while child
+        # commands lose namespace capabilities. Keep the global restriction on.
+        # Pin both the upstream revision and content before loading as root.
+        env:
+          PROFILE_URL: https://gitlab.com/apparmor/apparmor/-/raw/53074bb9063797743ba8298388dd590b8265ccf7/profiles/apparmor/profiles/extras/bwrap-userns-restrict
+          PROFILE_SHA256: 634d3d3427c483f123cb5ed53b71ea13040187e07d9f67ca74421d42a6170f0e
+        run: |
+          curl --fail --show-error --location --retry 3 --max-time 60 "$PROFILE_URL" --output "$RUNNER_TEMP/bwrap-userns-restrict"
+          printf '%s  %s\n' "$PROFILE_SHA256" "$RUNNER_TEMP/bwrap-userns-restrict" | sha256sum --check --strict
+          sudo apparmor_parser --replace "$RUNNER_TEMP/bwrap-userns-restrict"
       - name: Check Linux sandbox availability
         # Fail early without disabling AppArmor or weakening immutable verification.
         run: bwrap --die-with-parent --ro-bind / / --proc /proc --dev /dev /bin/true

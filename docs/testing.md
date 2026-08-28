@@ -17,6 +17,13 @@ bwrap --die-with-parent --ro-bind / / --proc /proc --dev /dev /bin/true
 
 The last command is a fail-fast environment check. Do not disable AppArmor,
 run the tests as root, or bypass the verification boundary to make it pass.
+Ubuntu 24.04 also restricts user namespaces. CI loads the upstream AppArmor
+`bwrap-userns-restrict` policy (ABI 4.0, commit and SHA-256 pinned in the workflow).
+It permits sandbox setup but strips capabilities from the child commands; no
+global namespace restriction is disabled. This setup is for the disposable
+GitHub-hosted runner, not an instruction to overwrite a workstation's policy.
+See [Ubuntu's explanation](https://discourse.ubuntu.com/t/understanding-apparmor-user-namespace-restriction/58007)
+and the [pinned upstream policy](https://gitlab.com/apparmor/apparmor/-/blob/53074bb9063797743ba8298388dd590b8265ccf7/profiles/apparmor/profiles/extras/bwrap-userns-restrict).
 The full suite checks same-UID write denial and allowed output directories.
 On macOS, verification uses the system `sandbox-exec` instead.
 
